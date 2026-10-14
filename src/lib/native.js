@@ -8,6 +8,7 @@ import { Share } from '@capacitor/share';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { Browser } from '@capacitor/browser';
+import { App as CapApp } from '@capacitor/app';
 
 export const isNative = Capacitor.isNativePlatform();
 
@@ -48,19 +49,80 @@ export function applyStatusBar(dark) {
 }
 
 // ---------- Pengenalan suara (dikte) ----------
+/** Error suara dengan kode yang bisa dijelaskan ke pengguna. */
+export class VoiceError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const VOICE_MESSAGES = {
+  permission: 'Izin mikrofon ditolak. Izinkan mikrofon untuk A.I.DRIY di Pengaturan HP, lalu coba lagi.',
+  unavailable: 'Pengenalan suara tidak tersedia di perangkat ini. Pasang atau aktifkan aplikasi Google / layanan suara.',
+  'no-speech': 'Tidak ada suara yang terdengar. Coba bicara lebih dekat ke mikrofon.',
+  'no-mic': 'Mikrofon tidak ditemukan atau sedang dipakai aplikasi lain.',
+  network: 'Pengenalan suara butuh koneksi internet di perangkat ini.',
+  unknown: 'Pengenalan suara berhenti karena kesalahan.',
+};
+
+export function voiceErrorMessage(e) {
+  if (!e) return VOICE_MESSAGES.unknown;
+  if (e.code && VOICE_MESSAGES[e.code]) return VOICE_MESSAGES[e.code];
+  const m = String(e.message || e.error || e);
+  if (/permission|not-allowed|denied|service-not-allowed/i.test(m)) return VOICE_MESSAGES.permission;
+  if (/no.?match|no-speech|didn.?t understand|speech timeout/i.test(m)) return VOICE_MESSAGES['no-speech'];
+  if (/audio-capture|recorder|busy/i.test(m)) return VOICE_MESSAGES['no-mic'];
+  if (/network/i.test(m)) return VOICE_MESSAGES.network;
+  return m || VOICE_MESSAGES.unknown;
+}
+
+export function voiceErrorCode(e) {
+  if (e?.code) return e.code;
+  const m = String(e?.message || e?.error || e || '');
+  if (/permission|not-allowed|denied/i.test(m)) return 'permission';
+  if (/no.?match|no-speech|didn.?t understand|speech timeout/i.test(m)) return 'no-speech';
+  if (/audio-capture/i.test(m)) return 'no-mic';
+  if (/aborted/i.test(m)) return 'aborted';
+  return 'unknown';
+}
+
+/** Mendeteksi kemampuan suara perangkat: STT (dikte) dan TTS (membacakan). */
+export async function voiceCapabilities() {
+  if (isNative) {
+    const stt = await SpeechRecognition.available()
+      .then((r) => !!r.available)
+      .catch(() => false);
+    const tts = await TextToSpeech.getSupportedLanguages()
+      .then(() => true)
+      .catch(() => false);
+    return { stt, tts, native: true };
+  }
+  return {
+    stt: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+    tts: 'speechSynthesis' in window,
+    native: false,
+  };
+}
+
 /**
- * Mulai mendengarkan. onPartial(text) dipanggil saat kata-kata masuk,
- * onEnd(finalText) saat berhenti. Mengembalikan fungsi stop().
+ * Mulai mendengarkan.
+ * - onStart(): mikrofon benar-benar aktif (baru tampilkan "Mendengarkan")
+ * - onPartial(text): kata-kata masuk
+ * - onEnd(finalText): berhenti (teks bisa kosong)
+ * - onError(VoiceError)
+ * Mengembalikan fungsi stop(). Melempar VoiceError bila izin/perangkat tidak tersedia.
  */
-export async function startListening({ lang = 'id-ID', onPartial, onEnd, onError }) {
+export async function startListening({ lang = 'id-ID', onStart, onPartial, onEnd, onError }) {
   if (isNative) {
     const avail = await SpeechRecognition.available().catch(() => ({ available: false }));
-    if (!avail.available) throw new Error('Pengenalan suara tidak tersedia di HP ini. Pasang/aktifkan Google app.');
+    if (!avail.available) throw new VoiceError('unavailable', VOICE_MESSAGES.unavailable);
     let perm = await SpeechRecognition.checkPermissions();
     if (perm.speechRecognition !== 'granted') perm = await SpeechRecognition.requestPermissions();
-    if (perm.speechRecognition !== 'granted') throw new Error('Izin mikrofon ditolak.');
+    if (perm.speechRecognition !== 'granted') throw new VoiceError('permission', VOICE_MESSAGES.permission);
     let latest = '';
     let ended = false;
+    let started = false;
     await SpeechRecognition.removeAllListeners();
     const finish = () => {
       if (ended) return;
@@ -73,12 +135,21 @@ export async function startListening({ lang = 'id-ID', onPartial, onEnd, onError
       onPartial?.(latest);
     });
     await SpeechRecognition.addListener('listeningState', (d) => {
+      if (d.status === 'started' && !started) {
+        started = true;
+        onStart?.();
+      }
       if (d.status === 'stopped') finish();
     });
-    SpeechRecognition.start({ language: lang, partialResults: true, popup: false, maxResults: 1 }).catch((e) => {
-      onError?.(e);
-      finish();
-    });
+    SpeechRecognition.start({ language: lang, partialResults: true, popup: false, maxResults: 1 })
+      .then((r) => {
+        if (r?.matches?.[0]) latest = r.matches[0];
+      })
+      .catch((e) => {
+        const code = voiceErrorCode(e);
+        if (code !== 'aborted' && !(code === 'no-speech' && latest)) onError?.(new VoiceError(code, voiceErrorMessage(e)));
+        finish();
+      });
     return async () => {
       await SpeechRecognition.stop().catch(() => {});
       setTimeout(finish, 400);
@@ -86,22 +157,52 @@ export async function startListening({ lang = 'id-ID', onPartial, onEnd, onError
   }
 
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) throw new Error('Browser ini tidak mendukung pengenalan suara.');
+  if (!SR) throw new VoiceError('unavailable', 'Browser ini tidak mendukung pengenalan suara.');
   const rec = new SR();
   rec.lang = lang;
   rec.interimResults = true;
   rec.continuous = false;
   let latest = '';
+  rec.onstart = () => onStart?.();
   rec.onresult = (e) => {
     latest = Array.from(e.results)
       .map((r) => r[0].transcript)
       .join('');
     onPartial?.(latest);
   };
-  rec.onerror = (e) => onError?.(new Error(e.error));
+  rec.onerror = (e) => {
+    const code = voiceErrorCode(e);
+    if (code !== 'aborted') onError?.(new VoiceError(code, voiceErrorMessage(e)));
+  };
   rec.onend = () => onEnd?.(latest);
   rec.start();
   return async () => rec.stop();
+}
+
+/** Dipanggil saat aplikasi masuk background (Android) atau tab disembunyikan (browser). Mengembalikan fungsi lepas. */
+export function onAppBackground(fn) {
+  let handle = null;
+  let removed = false;
+  if (isNative) {
+    Promise.resolve(CapApp.addListener('pause', fn))
+      .then((h) => {
+        if (removed) h.remove();
+        else handle = h;
+      })
+      .catch(() => {});
+  }
+  const remove = () => {
+    removed = true;
+    handle?.remove();
+  };
+  const vis = () => {
+    if (document.visibilityState === 'hidden') fn();
+  };
+  document.addEventListener('visibilitychange', vis);
+  return () => {
+    document.removeEventListener('visibilitychange', vis);
+    remove();
+  };
 }
 
 // ---------- Membacakan teks ----------

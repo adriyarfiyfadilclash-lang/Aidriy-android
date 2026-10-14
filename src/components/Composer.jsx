@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, AudioLines, FileText, Mic, Plus, Square, X } from 'lucide-react';
-import { startListening, tap } from '../lib/native';
+import { ArrowUp, AudioLines, FileText, Mic, Plus, RotateCcw, Square, X } from 'lucide-react';
+import { startListening, tap, voiceErrorMessage } from '../lib/native';
 import { useApp } from '../state';
 
 export default function Composer({
@@ -22,10 +22,12 @@ export default function Composer({
   const { settings, showToast } = useApp();
   const ref = useRef();
   const [dictating, setDictating] = useState(false);
+  const [micLive, setMicLive] = useState(false); // true hanya setelah mikrofon benar-benar aktif
+  const [review, setReview] = useState(null); // { base, text } setelah dikte selesai: Rekam ulang / Batal
   const stopRef = useRef(null);
   const baseRef = useRef('');
-  const sendAfterRef = useRef(false);
   const latestRef = useRef('');
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -36,51 +38,62 @@ export default function Composer({
 
   const hasContent = value.trim().length > 0 || attachments.length > 0;
 
-  const startDictation = async () => {
+  // Dikte tidak pernah mengirim otomatis: teks masuk ke kotak pesan untuk diperiksa dulu.
+  const startDictation = async (base = value) => {
     tap();
-    baseRef.current = value ? `${value.trimEnd()} ` : '';
+    setReview(null);
+    baseRef.current = base ? `${base.trimEnd()} ` : '';
     latestRef.current = '';
-    sendAfterRef.current = false;
+    cancelledRef.current = false;
+    setMicLive(false);
+    setDictating(true);
     try {
-      setDictating(true);
       stopRef.current = await startListening({
         lang: settings.voice.lang,
+        onStart: () => setMicLive(true),
         onPartial: (t) => {
           latestRef.current = t;
-          setValue(baseRef.current + t);
+          if (!cancelledRef.current) setValue(baseRef.current + t);
         },
         onEnd: (t) => {
-          const finalText = baseRef.current + (t || latestRef.current);
           setDictating(false);
+          setMicLive(false);
           stopRef.current = null;
+          if (cancelledRef.current) return;
+          const said = (t || latestRef.current || '').trim();
+          const finalText = (baseRef.current + said).trimEnd();
           setValue(finalText);
-          if (sendAfterRef.current) {
-            sendAfterRef.current = false;
-            if (finalText.trim() || attachments.length) onSend(finalText);
-          }
+          if (said) setReview({ base: baseRef.current.trimEnd(), text: finalText });
+          setTimeout(() => ref.current?.focus(), 50);
         },
         onError: (e) => {
-          if (e?.message && !/no match|no-speech|aborted/i.test(e.message)) showToast(e.message, 'error');
+          if (e?.code === 'no-speech' && !latestRef.current) showToast(voiceErrorMessage(e));
+          else if (e?.code !== 'no-speech') showToast(voiceErrorMessage(e), 'error');
         },
       });
     } catch (e) {
       setDictating(false);
-      showToast(e.message, 'error');
+      setMicLive(false);
+      showToast(voiceErrorMessage(e), 'error');
     }
   };
 
-  const stopDictation = async (send) => {
+  const stopDictation = async () => {
     tap();
-    sendAfterRef.current = send;
     if (stopRef.current) await stopRef.current();
   };
 
   const cancelDictation = async () => {
     tap();
-    sendAfterRef.current = false;
-    if (stopRef.current) await stopRef.current();
+    cancelledRef.current = true;
     setValue(baseRef.current.trimEnd());
+    if (stopRef.current) await stopRef.current();
+    setDictating(false);
+    setMicLive(false);
   };
+
+  // Tampilkan Rekam ulang / Batal hanya selama teks hasil dikte belum diubah.
+  const reviewing = review && value === review.text;
 
   return (
     <div className={`composer ${incognito ? 'incognito' : ''}`}>
@@ -108,25 +121,43 @@ export default function Composer({
       {dictating ? (
         <>
           {value && <div className="dictation-preview">{value}</div>}
+          <div className="dictation-status" aria-live="polite">
+            {micLive ? 'Mendengarkan… ketuk ■ bila selesai' : 'Menyiapkan mikrofon…'}
+          </div>
           <div className="dictation-bar">
-            <button type="button" className="round-btn soft" onClick={cancelDictation} aria-label="Batal">
+            <button type="button" className="round-btn soft" onClick={cancelDictation} aria-label="Batal dikte">
               <X size={22} />
             </button>
-            <div className="wave-dots" aria-label="Mendengarkan">
+            <div className={`wave-dots ${micLive ? '' : 'idle'}`} aria-hidden="true">
               {Array.from({ length: 28 }).map((_, i) => (
                 <span key={i} style={{ animationDelay: `${(i % 7) * 0.12}s` }} />
               ))}
             </div>
-            <button type="button" className="round-btn soft" onClick={() => stopDictation(false)} aria-label="Selesai">
-              <Square size={18} fill="currentColor" />
-            </button>
-            <button type="button" className="round-btn accent" onClick={() => stopDictation(true)} aria-label="Kirim">
-              <ArrowUp size={22} />
+            <button type="button" className="round-btn dark" onClick={stopDictation} aria-label="Selesai dikte">
+              <Square size={16} fill="currentColor" />
             </button>
           </div>
         </>
       ) : (
         <>
+          {reviewing && (
+            <div className="dictation-chips">
+              <button type="button" className="chip" onClick={() => startDictation(review.base)}>
+                <RotateCcw size={14} /> Rekam ulang
+              </button>
+              <button
+                type="button"
+                className="chip"
+                onClick={() => {
+                  tap();
+                  setValue(review.base);
+                  setReview(null);
+                }}
+              >
+                <X size={14} /> Batal
+              </button>
+            </div>
+          )}
           <textarea
             ref={ref}
             className="composer-input"
@@ -144,7 +175,7 @@ export default function Composer({
             </button>
             <div className="spacer" />
             {!busy && (
-              <button type="button" className="round-btn soft" onClick={startDictation} aria-label="Dikte suara">
+              <button type="button" className="round-btn soft" onClick={() => startDictation()} aria-label="Dikte suara">
                 <Mic size={22} strokeWidth={1.75} />
               </button>
             )}

@@ -1,120 +1,124 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Brain, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, Check, ChevronRight } from 'lucide-react';
 import { useApp } from '../../state';
 import * as db from '../../lib/db';
-import { ConfirmDialog, Empty, Group, IconButton, PromptDialog, Row, Toggle, TopBar } from '../../components/ui';
+import { tap } from '../../lib/native';
+import { ConfirmDialog, IconButton, Toggle } from '../../components/ui';
 
 export default function MemoryPage() {
-  const { uid, settings, setSettings, showToast } = useApp();
-  const [items, setItems] = useState(null);
-  const [edit, setEdit] = useState(null); // {id?, content}
-  const [confirmAll, setConfirmAll] = useState(false);
+  const navigate = useNavigate();
+  const { uid, profile, setProfile, settings, setSettings, showToast } = useApp();
+  const initial = useMemo(
+    () => ({ nickname: profile?.nickname || '', occupation: profile?.occupation || '', about: profile?.about || '' }),
+    [profile]
+  );
+  const [form, setForm] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [count, setCount] = useState(null);
+  const [leaveAsk, setLeaveAsk] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      setItems(await db.listMemories());
-    } catch (e) {
-      showToast(e.message, 'error');
-      setItems([]);
-    }
-  }, [showToast]);
-
+  useEffect(() => setForm(initial), [initial]);
   useEffect(() => {
-    load();
-  }, [load]);
+    db.listMemories()
+      .then((m) => setCount(m.length))
+      .catch(() => setCount(null));
+  }, []);
+
+  const dirty = JSON.stringify(form) !== JSON.stringify(initial);
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const save = async () => {
+    if (!dirty || busy) return;
+    tap('medium');
+    setBusy(true);
+    try {
+      const p = await db.updateProfile(uid, {
+        nickname: form.nickname.trim() || null,
+        occupation: form.occupation.trim() || null,
+        about: form.about.trim() || null,
+      });
+      setProfile(p);
+      showToast('Memori disimpan');
+    } catch (e) {
+      showToast(`Gagal menyimpan: ${e.message}`, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <div className="page">
-      <TopBar
-        back
-        title={<span className="serif-title">Memori</span>}
-        right={
-          <IconButton label="Tambah memori" onClick={() => setEdit({ content: '' })}>
-            <Plus size={26} strokeWidth={1.6} />
-          </IconButton>
-        }
-      />
-      <main className="page-scroll">
-        <Group>
-          <Row
-            icon={<Brain size={24} strokeWidth={1.5} />}
-            title="Gunakan memori"
-            subtitle="AI membaca dan menambah memori saat chat (tidak berlaku di chat incognito)"
-            right={<Toggle checked={settings.memory} onChange={(v) => setSettings({ memory: v })} label="Gunakan memori" />}
-            onClick={() => setSettings({ memory: !settings.memory })}
-          />
-        </Group>
+    <div className="page p-page">
+      <header className="p-head">
+        <IconButton label="Kembali" className="p-round" onClick={() => (dirty ? setLeaveAsk(true) : navigate(-1))}>
+          <ArrowLeft size={24} strokeWidth={1.75} />
+        </IconButton>
+        <div className="p-head-title">Memori</div>
+        <IconButton label="Simpan" onClick={save} className={`p-round ${dirty ? 'active' : ''}`} disabled={!dirty || busy}>
+          {busy ? <span className="spinner small" /> : <Check size={24} strokeWidth={2} />}
+        </IconButton>
+      </header>
 
-        {items === null && (
-          <div className="center-fill">
-            <span className="spinner" />
+      <main className="page-scroll p-scroll">
+        <div className="p-card">
+          <div className="p-row static">
+            <span className="p-row-label">Aktifkan memori</span>
+            <Toggle checked={settings.memory} onChange={(v) => setSettings({ memory: v })} label="Aktifkan memori" />
           </div>
-        )}
-        {items?.length === 0 && (
-          <Empty title="Belum ada memori" text='Ceritakan tentang dirimu di chat, atau ketik "ingat bahwa…". Kamu juga bisa menambah manual dengan tombol +.' />
-        )}
-        {items?.length > 0 && (
-          <>
-            <div className="section-title">{items.length} memori tersimpan</div>
-            <div className="memory-list">
-              {items.map((m) => (
-                <div key={m.id} className="memory-item">
-                  <span className="memory-text">{m.content}</span>
-                  <IconButton label="Edit" onClick={() => setEdit(m)}>
-                    <Pencil size={18} />
-                  </IconButton>
-                  <IconButton
-                    label="Hapus"
-                    onClick={async () => {
-                      try {
-                        await db.deleteMemory(m.id);
-                        setItems((prev) => prev.filter((x) => x.id !== m.id));
-                      } catch (e) {
-                        showToast(e.message, 'error');
-                      }
-                    }}
-                  >
-                    <Trash2 size={18} />
-                  </IconButton>
-                </div>
-              ))}
-            </div>
-            <button type="button" className="btn btn-ghost danger-text btn-block" onClick={() => setConfirmAll(true)}>
-              Hapus semua memori
-            </button>
-          </>
-        )}
+        </div>
+        <p className="p-note">
+          Biarkan A.I.DRIY mempersonalisasi jawaban berdasarkan chat dan info yang kamu berikan. Chat incognito tidak memakai dan tidak menambah memori.
+        </p>
+
+        <div className="p-card">
+          <button type="button" className="p-row" onClick={() => navigate('/settings/memory/summary')}>
+            <span className="p-row-label">Ringkasan memori</span>
+            <ChevronRight size={20} className="muted" />
+          </button>
+          <button type="button" className="p-row" onClick={() => navigate('/settings/memory/saved')}>
+            <span className="p-row-label">Memori tersimpan</span>
+            {count !== null && <span className="p-row-value">{count}</span>}
+            <ChevronRight size={20} className="muted" />
+          </button>
+        </div>
+        <p className="p-note">
+          Lihat ringkasan hal yang telah dipelajari A.I.DRIY tentangmu. Gunakan{' '}
+          <button type="button" className="inline-link" onClick={() => navigate('/settings/personalization')}>
+            Instruksi khusus
+          </button>{' '}
+          untuk aturan yang harus selalu diikuti.
+        </p>
+
+        <div className="p-section">Nama panggilan Anda</div>
+        <div className="p-card">
+          <input className="p-input" value={form.nickname} onChange={set('nickname')} placeholder="Nama panggilan" maxLength={60} />
+        </div>
+
+        <div className="p-section">Pekerjaan Anda</div>
+        <div className="p-card">
+          <input className="p-input" value={form.occupation} onChange={set('occupation')} placeholder="Insinyur, pelajar, dll." maxLength={120} />
+        </div>
+
+        <div className="p-section">Info lainnya tentang Anda</div>
+        <div className="p-card">
+          <textarea
+            className="p-textarea"
+            rows={4}
+            value={form.about}
+            onChange={set('about')}
+            placeholder="Preferensi, nilai, atau pilihan yang perlu diingat"
+            maxLength={2000}
+          />
+        </div>
       </main>
 
-      <PromptDialog
-        open={!!edit}
-        onClose={() => setEdit(null)}
-        title={edit?.id ? 'Edit memori' : 'Tambah memori'}
-        initial={edit?.content}
-        placeholder="Misal: Saya punya toko Shopify bernama DESKR"
-        onSubmit={async (v) => {
-          try {
-            if (edit?.id) await db.updateMemory(edit.id, v);
-            else await db.addMemories([v]);
-            load();
-          } catch (e) {
-            showToast(e.message, 'error');
-          }
-        }}
-      />
       <ConfirmDialog
-        open={confirmAll}
-        onClose={() => setConfirmAll(false)}
-        title="Hapus semua memori?"
-        message="AI akan lupa semua yang sudah diingat tentangmu."
-        onConfirm={async () => {
-          try {
-            await db.deleteAllMemories(uid);
-            setItems([]);
-          } catch (e) {
-            showToast(e.message, 'error');
-          }
-        }}
+        open={leaveAsk}
+        onClose={() => setLeaveAsk(false)}
+        title="Buang perubahan?"
+        message="Perubahan di halaman Memori belum disimpan."
+        confirmLabel="Buang"
+        onConfirm={() => navigate(-1)}
       />
     </div>
   );

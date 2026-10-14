@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Check, FolderClosed, Ghost, MoreHorizontal, Pencil, Share2, Star, Trash2, X } from 'lucide-react';
+import { FolderClosed, Ghost, MoreHorizontal, Pencil, Share2, Star, Trash2, X } from 'lucide-react';
 import { useApp } from '../state';
 import * as db from '../lib/db';
 import { PROVIDERS, effortLabel, shortModelName, streamChat } from '../lib/providers';
@@ -13,7 +13,7 @@ import { addSource, applySnippetCitations, marker } from '../lib/citations';
 import { searchImages } from '../lib/search/imageSearch';
 import { imageQueryFromText } from '../lib/search/intent';
 import { attachmentMeta, fileToAttachment, imageFromBase64 } from '../lib/files';
-import { shareText, takePhoto, tap } from '../lib/native';
+import { takePhoto, tap } from '../lib/native';
 import { ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet, TopBar } from '../components/ui';
 import { LogoMark } from '../components/Logo';
 import Composer from '../components/Composer';
@@ -22,6 +22,40 @@ import AttachSheet from '../components/AttachSheet';
 import ModelPicker from '../components/ModelPicker';
 import CanvasView from '../components/CanvasView';
 import VoiceMode from '../components/VoiceMode';
+import ProjectPicker from '../components/ProjectPicker';
+import ShareChatSheet, { shareOrCopy } from '../components/ShareChatSheet';
+import { canvasSize } from '../components/CanvasBlock';
+
+const groupKey = (m) => m.parent_id || m.id;
+
+/** Pesan yang tampil: semua pesan pengguna + satu versi terpilih per kelompok jawaban AI. */
+export function computeVisible(list) {
+  const groups = new Map();
+  for (const m of list) {
+    if (m.role !== 'assistant') continue;
+    const k = groupKey(m);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(m);
+  }
+  const out = [];
+  const info = new Map();
+  const seen = new Set();
+  for (const m of list) {
+    if (m.role !== 'assistant') {
+      out.push(m);
+      continue;
+    }
+    const k = groupKey(m);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const g = groups.get(k);
+    let idx = g.findIndex((x) => x._sel);
+    if (idx < 0) idx = g.length - 1;
+    out.push(g[idx]);
+    info.set(g[idx].id, { index: idx + 1, count: g.length, key: k });
+  }
+  return { list: out, info };
+}
 
 function makeTitle(text, atts) {
   const line = (text || '').split('\n').find((l) => l.trim()) || '';
@@ -74,6 +108,11 @@ export default function ChatPage() {
   const wide = useWide();
   const localCanvasesRef = useRef(new Map());
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const voiceOpenRef = useRef(false);
+  voiceOpenRef.current = voiceOpen;
+  const [canvasRows, setCanvasRows] = useState({});
+  const [localTick, setLocalTick] = useState(0);
+  const fbLock = useRef(new Set());
 
   const createdRef = useRef(null);
   const abortRef = useRef(null);
@@ -87,6 +126,17 @@ export default function ChatPage() {
   const busyRef = useRef(false);
   const convRef = useRef(conv);
   convRef.current = conv;
+  const visible = useMemo(() => computeVisible(messages), [messages]);
+
+  const loadCanvasRows = useCallback(async (convId) => {
+    if (!convId) return;
+    try {
+      const rows = await canvasDb.listConversationCanvases(convId, 200);
+      setCanvasRows(Object.fromEntries(rows.map((r) => [r.id, r])));
+    } catch {
+      /* tampilkan isi dari pesan saja */
+    }
+  }, []);
 
   // ---------- Muat / reset percakapan ----------
   useEffect(() => {
@@ -100,6 +150,7 @@ export default function ChatPage() {
       setWebSearch(settings.webSearch);
       setNewProjectId(new URLSearchParams(location.search).get('project'));
       setCanvasOpen(null);
+      setCanvasRows({});
       localCanvasesRef.current = new Map();
       createdRef.current = null;
       const fromLibrary = location.state?.attachLibrary;
@@ -124,6 +175,8 @@ export default function ChatPage() {
     if (busyRef.current) abortRef.current?.abort();
     createdRef.current = null;
     setCanvasOpen(null);
+    setCanvasRows({});
+    loadCanvasRows(id);
     let cancelled = false;
     setLoading(true);
     setIncognito(false);
@@ -150,6 +203,16 @@ export default function ChatPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, location.state?.fresh]);
+
+  // Ganti nama / pindah proyek dari riwayat (drawer) ikut terlihat di header.
+  useEffect(() => {
+    if (!conv) return;
+    const fresh = app.conversations.find((c) => c.id === conv.id);
+    if (fresh && (fresh.title !== conv.title || fresh.project_id !== conv.project_id || fresh.starred !== conv.starred)) {
+      setConv((c) => (c && c.id === fresh.id ? { ...c, title: fresh.title, project_id: fresh.project_id, starred: fresh.starred } : c));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app.conversations]);
 
   // Gulir otomatis ke bawah bila pengguna sedang di bawah.
   useEffect(() => {
@@ -214,14 +277,15 @@ export default function ChatPage() {
       });
 
   // ---------- Canvas: simpan hasil AI (buat / perbarui revisi) ----------
-  const processCanvases = async (clean, convId, messageId, active, localOnly) => {
-    const segs = splitSegments(clean).filter((x) => x.type === 'artifact' && x.complete && x.content.trim());
+  const processCanvases = async (clean, convId, messageId, active, localOnly, only = null) => {
+    const segs = splitSegments(clean).filter((x) => x.type === 'artifact' && x.complete && x.content.trim() && (!only || only.has(x.index)));
     const infos = [];
     for (const seg of segs) {
       if (localOnly) {
         const known = seg.action === 'update' && seg.id && localCanvasesRef.current.has(seg.id);
         const lid = known ? seg.id : `local-${Date.now().toString(36)}-${seg.index}`;
         localCanvasesRef.current.set(lid, { id: lid, localId: lid, title: seg.title, kind: seg.kind, language: seg.language, content: seg.content });
+        setLocalTick((n) => n + 1);
         infos[seg.index] = { id: lid, local: true, status: 'local', revision: 1 };
         if (known && canvasOpen?.localId === lid) setCanvasRefresh((n) => n + 1);
         continue;
@@ -278,6 +342,7 @@ export default function ChatPage() {
         if (!latest) throw new Error('Canvas sudah dihapus');
         const row = await canvasDb.saveCanvas(info.id, latest.revision, seg.content, { title: seg.title, source: 'ai' });
         next = { id: row.id, status: 'updated', revision: row.revision };
+        setCanvasRows((r) => ({ ...r, [row.id]: row }));
         setCanvasRefresh((n) => n + 1);
         showToast(`Versi AI diterapkan sebagai revisi ${row.revision}`);
       } catch (e) {
@@ -292,21 +357,63 @@ export default function ChatPage() {
     if (!String(messageId).startsWith('ai-')) db.updateMessageMeta(messageId, meta).catch(() => {});
   };
 
-  const openCanvas = (seg, info) => {
+  const openCanvas = (seg, info, mode = 'preview') => {
     tap();
-    if (info?.local) setCanvasOpen({ localId: info.id });
-    else if (info?.id) setCanvasOpen({ id: info.id });
-    else setCanvasOpen({ legacy: { id: `legacy-${seg.index}`, title: seg.title, kind: seg.kind, language: seg.language, content: seg.content } });
+    if (info?.local) setCanvasOpen({ localId: info.id, mode });
+    else if (info?.id && info.status !== 'error') setCanvasOpen({ id: info.id, mode });
+    else setCanvasOpen({ legacy: { id: `legacy-${seg.index}`, title: seg.title, kind: seg.kind, language: seg.language, content: seg.content }, mode });
+  };
+
+  // Hasil Canvas panjang langsung dibuka setelah berhasil dibuat/diperbarui.
+  const autoOpenLong = (clean, infos) => {
+    if (voiceOpenRef.current || !infos?.length) return;
+    const segs = splitSegments(clean).filter((x) => x.type === 'artifact' && x.complete);
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const seg = segs[i];
+      const info = infos[seg.index];
+      if (!info || !['created', 'updated', 'local'].includes(info.status)) continue;
+      if (canvasSize(seg.content, seg.kind) === 'long') {
+        setCanvasOpen(info.local ? { localId: info.id, mode: 'preview' } : { id: info.id, mode: 'preview' });
+      }
+      return;
+    }
+  };
+
+  // Simpan ulang Canvas yang gagal tersimpan (hanya bagian yang gagal, tanpa duplikat).
+  const retryCanvas = async (messageId) => {
+    const msg = messagesRef.current.find((m) => m.id === messageId);
+    const convId = convRef.current?.id;
+    if (!msg || !convId || String(messageId).startsWith('ai-')) return;
+    const failed = new Set((msg.meta?.canvases || []).map((c, i) => (c?.status === 'error' ? i : -1)).filter((i) => i >= 0));
+    if (!failed.size) return;
+    let active = [];
+    try {
+      active = (await canvasDb.listConversationCanvases(convId, 200)).map((c) => ({ ...c, kind: canvasDb.kindOf(c) }));
+    } catch {
+      /* lanjut */
+    }
+    const infos = await processCanvases(msg.content, convId, messageId, active, false, failed);
+    const canvases = (msg.meta.canvases || []).map((old, i) => (failed.has(i) ? infos[i] || old : old));
+    const meta = { ...msg.meta, canvases };
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, meta } : m)));
+    db.updateMessageMeta(messageId, meta).catch(() => {});
+    loadCanvasRows(convId);
+    if (canvases.some((c) => c?.status === 'error')) showToast('Canvas masih gagal disimpan', 'error');
   };
 
   // ---------- Menjalankan AI ----------
-  const runAssistant = async (convId, historyList, beforeSave) => {
+  const runAssistant = async (convId, historyList, beforeSave, opts = {}) => {
     const provider = settings.provider;
     const model = settings.model;
     const apiKey = settings.keys[provider];
     const tempId = `ai-${Date.now()}`;
-    const ai = { id: tempId, role: 'assistant', content: '', thinking: '', streaming: true, status: '', meta: {} };
-    setMessages((prev) => [...prev, ai]);
+    const parentId = opts.parentId || null;
+    const version = opts.version || 1;
+    const ai = { id: tempId, role: 'assistant', content: '', thinking: '', streaming: true, status: '', meta: {}, parent_id: parentId, version, _sel: true };
+    setMessages((prev) => [
+      ...prev.map((m) => (m.role === 'assistant' && parentId && groupKey(m) === parentId && m._sel ? { ...m, _sel: false } : m)),
+      ai,
+    ]);
     stickRef.current = true;
 
     let text = '';
@@ -455,6 +562,15 @@ export default function ChatPage() {
       if (q) startImageSearch(q, true);
     }
 
+    // Buat ulang gagal/dibatalkan tanpa isi: jawaban lama tetap dipakai.
+    if (opts.regen && !clean.trim() && !imageBlocks.length) {
+      setMessages((prev) =>
+        prev.filter((m) => m.id !== tempId).map((m) => (opts.prevSelId && m.id === opts.prevSelId ? { ...m, _sel: true } : m))
+      );
+      if (error) showToast(`Gagal membuat ulang: ${error}`, 'error');
+      return '';
+    }
+
     const baseMeta = {
       provider,
       model: shortModelName(provider, model, settings.modelCache),
@@ -477,18 +593,25 @@ export default function ChatPage() {
 
     if (incognito || !convId) {
       const infos = await processCanvases(clean, null, null, canvases, true);
-      if (infos.length) setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, meta: { ...m.meta, canvases: infos } } : m)));
+      if (infos.length) {
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, meta: { ...m.meta, canvases: infos } } : m)));
+        autoOpenLong(clean, infos);
+      }
     }
 
     if (!incognito && convId && (clean.trim() || imageBlocks.length)) {
       try {
-        await beforeSave;
-        const saved = await db.insertMessage({ conversation_id: convId, role: 'assistant', content: clean, meta });
-        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: saved.id } : m)));
+        const realParent = (await beforeSave) || parentId;
+        const row = { conversation_id: convId, role: 'assistant', content: clean, meta, version };
+        if (realParent && !String(realParent).startsWith('u-')) row.parent_id = realParent;
+        const saved = await db.insertMessage(row);
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: saved.id, parent_id: saved.parent_id || m.parent_id, created_at: saved.created_at } : m)));
         const infos = await processCanvases(clean, convId, saved.id, canvases, false);
         if (infos.length) {
           const withCanvas = { ...meta, canvases: infos };
           setMessages((prev) => prev.map((m) => (m.id === saved.id ? { ...m, meta: withCanvas } : m)));
+          await loadCanvasRows(convId);
+          autoOpenLong(clean, infos);
           await db.updateMessageMeta(saved.id, withCanvas);
         }
         await db.updateConversation(convId, { provider, model });
@@ -553,10 +676,10 @@ export default function ChatPage() {
         return '';
       }
 
-      const history = [...messagesRef.current, userMsg];
-      setMessages(history);
+      const history = [...computeVisible(messagesRef.current).list, userMsg];
+      setMessages((prev) => [...prev, userMsg]);
 
-      let saveUser = Promise.resolve();
+      let saveUser = Promise.resolve(null);
       if (!incognito && convId) {
         saveUser = (async () => {
           const metas = [];
@@ -572,12 +695,20 @@ export default function ChatPage() {
             metas.push(attachmentMeta(a, path));
           }
           const saved = await db.insertMessage({ conversation_id: convId, role: 'user', content: text, attachments: metas });
-          setMessages((prev) => prev.map((m) => (m.id === userMsg.id ? { ...m, id: saved.id, attachments: metas } : m)));
-        })().catch((e) => showToast(`Gagal menyimpan pesan: ${e.message}`, 'error'));
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === userMsg.id ? { ...m, id: saved.id, attachments: metas } : m.parent_id === userMsg.id ? { ...m, parent_id: saved.id } : m
+            )
+          );
+          return saved.id;
+        })().catch((e) => {
+          showToast(`Gagal menyimpan pesan: ${e.message}`, 'error');
+          return null;
+        });
       }
 
       try {
-        return await runAssistant(convId, history, saveUser);
+        return await runAssistant(convId, history, saveUser, { parentId: userMsg.id });
       } finally {
         busyRef.current = false;
         setBusy(false);
@@ -587,31 +718,44 @@ export default function ChatPage() {
     [settings, incognito, newProjectId, webSearch, profile, project, uid]
   );
 
+  // Buat ulang: jawaban lama disimpan sebagai versi, jawaban baru jadi versi berikutnya.
   const regenerate = async () => {
     if (busyRef.current) return;
-    const list = [...messagesRef.current];
-    const last = list[list.length - 1];
-    if (last?.role === 'assistant') {
-      list.pop();
-      if (last.id && !String(last.id).startsWith('ai-')) {
-        try {
-          await db.deleteMessage(last.id);
-        } catch {
-          /* abaikan */
-        }
-      }
-    }
-    if (!list.length || list[list.length - 1].role !== 'user') return;
     if (!settings.keys[settings.provider]) {
       showToast('Tambahkan API key dulu', 'error');
       navigate('/settings/keys');
       return;
     }
-    setMessages(list);
+    let all = [...messagesRef.current];
+    let vis = computeVisible(all).list;
+    const tail = vis[vis.length - 1];
+    // Jawaban gagal yang tidak tersimpan dibuang (bukan versi).
+    if (tail?.role === 'assistant' && String(tail.id).startsWith('ai-') && !tail.content) {
+      all = all.filter((m) => m.id !== tail.id);
+      vis = computeVisible(all).list;
+    }
+    const lastA = vis[vis.length - 1]?.role === 'assistant' ? vis[vis.length - 1] : null;
+    const history = lastA ? vis.slice(0, -1) : vis;
+    const userM = history[history.length - 1];
+    if (!userM || userM.role !== 'user') return;
+    if (lastA && !lastA.parent_id) {
+      all = all.map((m) => (m.id === lastA.id ? { ...m, parent_id: userM.id } : m));
+      if (!String(lastA.id).startsWith('ai-') && !String(userM.id).startsWith('u-')) db.updateMessage(lastA.id, { parent_id: userM.id }).catch(() => {});
+    }
+    const siblings = all.filter((m) => m.role === 'assistant' && groupKey(m) === userM.id);
+    const version = siblings.reduce((mx, m) => Math.max(mx, m.version || 1), 0) + 1;
+    messagesRef.current = all;
+    setMessages(all);
+    tap();
     busyRef.current = true;
     setBusy(true);
     try {
-      await runAssistant(convRef.current?.id, list, Promise.resolve());
+      await runAssistant(convRef.current?.id, history, Promise.resolve(null), {
+        parentId: userM.id,
+        version,
+        regen: !!lastA,
+        prevSelId: lastA?.id,
+      });
     } catch {
       /* sudah ditampilkan */
     } finally {
@@ -619,6 +763,45 @@ export default function ChatPage() {
       setBusy(false);
     }
   };
+
+  const selectVersion = useCallback((key, delta) => {
+    tap();
+    setMessages((prev) => {
+      const g = prev.filter((m) => m.role === 'assistant' && groupKey(m) === key);
+      let cur = g.findIndex((m) => m._sel);
+      if (cur < 0) cur = g.length - 1;
+      const next = Math.min(Math.max(cur + delta, 0), g.length - 1);
+      const target = g[next]?.id;
+      return prev.map((m) => (m.role === 'assistant' && groupKey(m) === key ? { ...m, _sel: m.id === target } : m));
+    });
+  }, []);
+
+  // Suka / tidak suka: optimistis, satu permintaan per pesan, dikembalikan bila gagal.
+  const setFeedback = useCallback(
+    async (msg, value, reason) => {
+      if (fbLock.current.has(msg.id)) return;
+      const prev = { feedback: msg.feedback ?? null, feedback_reason: msg.feedback_reason ?? null };
+      const next = {
+        feedback: value || null,
+        feedback_reason: value === -1 ? (reason !== undefined ? reason : msg.feedback === -1 ? msg.feedback_reason : null) : null,
+      };
+      const patch = (p) => setMessages((list) => list.map((m) => (m.id === msg.id ? { ...m, ...p } : m)));
+      patch(next);
+      if (incognito || String(msg.id).startsWith('ai-')) return;
+      fbLock.current.add(msg.id);
+      try {
+        await db.setMessageFeedback(msg.id, next.feedback, next.feedback_reason);
+      } catch (e) {
+        patch(prev);
+        showToast(`Masukan gagal disimpan: ${e.message}`, 'error');
+      } finally {
+        fbLock.current.delete(msg.id);
+      }
+    },
+    [incognito, showToast]
+  );
+
+  const shareMessage = useCallback((msg) => shareOrCopy('Jawaban A.I.DRIY', plainText(msg.content || ''), showToast), [showToast]);
 
   // Ulangi pencarian gambar yang gagal pada pesan tertentu.
   const retryImages = useCallback(
@@ -664,17 +847,6 @@ export default function ChatPage() {
     }
   };
 
-  const shareChat = async () => {
-    const body = messages
-      .map((m) => `${m.role === 'user' ? 'Saya' : 'A.I.DRIY'}:\n${m.role === 'user' ? m.content : plainText(m.content)}`)
-      .join('\n\n');
-    try {
-      await shareText(conv?.title || 'Chat A.I.DRIY', body);
-    } catch {
-      /* dibatalkan */
-    }
-  };
-
   const chooseProject = async (pid) => {
     setSheet(null);
     if (conv) {
@@ -692,6 +864,21 @@ export default function ChatPage() {
 
   // ---------- Tampilan ----------
   const empty = messages.length === 0 && !loading;
+  const latestCanvas = useMemo(() => {
+    const map = {};
+    for (const m of visible.list) {
+      (m.meta?.canvases || []).forEach((c, i) => {
+        if (c?.id && c.status !== 'error') map[c.id] = `${m.id}:${i}`;
+      });
+    }
+    return map;
+  }, [visible]);
+  const rowsForRender = useMemo(() => {
+    if (!incognito && conv) return canvasRows;
+    return Object.fromEntries([...localCanvasesRef.current.entries()].map(([k, v]) => [k, { ...v, revision: 1 }]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasRows, incognito, conv, localTick]);
+  const lastAiId = visible.list.length && visible.list[visible.list.length - 1].role === 'assistant' ? visible.list[visible.list.length - 1].id : null;
   const modelLabel = `${shortModelName(settings.provider, settings.model, settings.modelCache)} ${effortLabel(settings.effort)}`;
 
   let header;
@@ -749,11 +936,14 @@ export default function ChatPage() {
         canvasId: canvasOpen.id,
         local: canvasOpen.localId ? localCanvasesRef.current.get(canvasOpen.localId) : canvasOpen.legacy,
         refreshKey: canvasRefresh,
+        initialMode: canvasOpen.mode,
         onClose: () => setCanvasOpen(null),
+        onSaved: (row) => setCanvasRows((r) => (r[row.id] && r[row.id].revision === row.revision && r[row.id].content === row.content ? r : { ...r, [row.id]: row })),
         onLocalChange: canvasOpen.localId
           ? (patch) => {
               const cur = localCanvasesRef.current.get(canvasOpen.localId);
               if (cur) localCanvasesRef.current.set(canvasOpen.localId, { ...cur, ...patch });
+              setLocalTick((n) => n + 1);
             }
           : undefined,
       }
@@ -812,19 +1002,28 @@ export default function ChatPage() {
         )}
         {!empty && (
           <div className="messages">
-            {messages.map((m, i) => (
-              <Message
-                key={m.id}
-                msg={m}
-                isLast={i === messages.length - 1}
-                busy={busy}
-                onRegenerate={m.role === 'assistant' ? regenerate : undefined}
-                onOpenCanvas={openCanvas}
-                onCanvasConflict={resolveCanvasConflict}
-                onRetryImages={retryImages}
-                voice={settings.voice}
-              />
-            ))}
+            {visible.list.map((m) => {
+              const v = visible.info.get(m.id);
+              return (
+                <Message
+                  key={m.id}
+                  msg={m}
+                  isLast={m.id === lastAiId}
+                  busy={busy}
+                  versions={v && v.count > 1 ? { index: v.index, count: v.count, onPrev: () => selectVersion(v.key, -1), onNext: () => selectVersion(v.key, 1) } : null}
+                  onRegenerate={m.role === 'assistant' ? regenerate : undefined}
+                  onOpenCanvas={openCanvas}
+                  onCanvasConflict={resolveCanvasConflict}
+                  onRetryCanvas={retryCanvas}
+                  onRetryImages={retryImages}
+                  onFeedback={m.role === 'assistant' ? setFeedback : undefined}
+                  onShare={m.role === 'assistant' ? shareMessage : undefined}
+                  canvasRows={rowsForRender}
+                  latestCanvas={latestCanvas}
+                  voice={settings.voice}
+                />
+              );
+            })}
           </div>
         )}
       </main>
@@ -867,11 +1066,11 @@ export default function ChatPage() {
         <>
           <div className="canvas-resizer" onPointerDown={startResize} role="separator" aria-orientation="vertical" aria-label="Ubah lebar Canvas" />
           <aside className="canvas-pane" style={{ width: paneWidth }}>
-            <CanvasView key={canvasOpen.id || canvasOpen.localId || 'legacy'} docked {...canvasProps} />
+            <CanvasView key={`${canvasOpen.id || canvasOpen.localId || 'legacy'}:${canvasOpen.mode || ''}`} docked {...canvasProps} />
           </aside>
         </>
       )}
-      {canvasProps && !wide && <CanvasView key={canvasOpen.id || canvasOpen.localId || 'legacy'} {...canvasProps} />}
+      {canvasProps && !wide && <CanvasView key={`${canvasOpen.id || canvasOpen.localId || 'legacy'}:${canvasOpen.mode || ''}`} {...canvasProps} />}
 
       <AttachSheet
         open={sheet === 'attach'}
@@ -900,10 +1099,7 @@ export default function ChatPage() {
           <Row
             icon={<Share2 size={22} strokeWidth={1.6} />}
             title="Bagikan isi chat"
-            onClick={() => {
-              setSheet(null);
-              shareChat();
-            }}
+            onClick={() => setSheet('share')}
           />
         </Group>
         <Group>
@@ -911,22 +1107,8 @@ export default function ChatPage() {
         </Group>
       </Sheet>
 
-      <Sheet open={sheet === 'project'} onClose={() => setSheet(null)} title="Pilih proyek">
-        <Group>
-          <Row icon={<X size={22} strokeWidth={1.6} />} title="Tanpa proyek" onClick={() => chooseProject(null)} right={!project ? <Check size={20} /> : null} />
-          {projects.map((p) => (
-            <Row
-              key={p.id}
-              icon={<FolderClosed size={22} strokeWidth={1.6} />}
-              title={p.name}
-              subtitle={p.description}
-              onClick={() => chooseProject(p.id)}
-              right={project?.id === p.id ? <Check size={20} /> : null}
-            />
-          ))}
-        </Group>
-        {projects.length === 0 && <p className="muted pad">Belum ada proyek. Buat dari menu Proyek.</p>}
-      </Sheet>
+      <ProjectPicker open={sheet === 'project'} onClose={() => setSheet(null)} currentId={project?.id || null} onPick={chooseProject} title="Pilih proyek" />
+      <ShareChatSheet open={sheet === 'share'} onClose={() => setSheet(null)} title={conv?.title} messages={visible.list} />
 
       <PromptDialog
         open={sheet === 'rename'}
@@ -964,6 +1146,7 @@ export default function ChatPage() {
       <VoiceMode
         open={voiceOpen}
         onClose={() => setVoiceOpen(false)}
+        onAbort={() => abortRef.current?.abort()}
         onUtterance={async (t) => {
           try {
             return await send(t);

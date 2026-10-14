@@ -48,6 +48,14 @@ export async function updateConversation(id, patch) {
       .single()
   );
 }
+export async function deleteConversations(ids) {
+  if (!ids.length) return;
+  check(await supabase.from('conversations').delete().in('id', ids));
+}
+export async function moveConversations(ids, projectId) {
+  if (!ids.length) return;
+  check(await supabase.from('conversations').update({ project_id: projectId, updated_at: new Date().toISOString() }).in('id', ids));
+}
 export async function deleteConversation(id) {
   check(await supabase.from('conversations').delete().eq('id', id));
 }
@@ -70,6 +78,12 @@ export async function insertMessage(row) {
 }
 export async function updateMessageMeta(id, meta) {
   check(await supabase.from('messages').update({ meta }).eq('id', id));
+}
+export async function updateMessage(id, patch) {
+  check(await supabase.from('messages').update(patch).eq('id', id));
+}
+export async function setMessageFeedback(id, feedback, reason = null) {
+  check(await supabase.from('messages').update({ feedback: feedback || null, feedback_reason: feedback === -1 ? reason : null }).eq('id', id));
 }
 export async function deleteMessage(id) {
   check(await supabase.from('messages').delete().eq('id', id));

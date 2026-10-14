@@ -67,12 +67,12 @@ function ManualCopy({ text, onClose }) {
  * - canvasId: Canvas tersimpan di database
  * - local: Canvas di chat incognito (hanya di memori)
  */
-export default function CanvasView({ canvasId, local, onClose, docked = false, refreshKey = 0, onOpenConversation, onLocalChange }) {
+export default function CanvasView({ canvasId, local, onClose, docked = false, refreshKey = 0, onOpenConversation, onLocalChange, initialMode = 'preview', onSaved }) {
   const { showToast } = useApp();
   const [art, setArt] = useState(local ? { ...local, revision: 1 } : null);
   const [title, setTitle] = useState(local?.title || '');
   const [content, setContent] = useState(local?.content || '');
-  const [mode, setMode] = useState('preview');
+  const [mode, setMode] = useState(initialMode === 'edit' ? 'edit' : 'preview');
   const [status, setStatus] = useState(local ? 'local' : 'loading');
   const [loadError, setLoadError] = useState('');
   const [conflict, setConflict] = useState(null); // versi server terbaru saat konflik
@@ -87,6 +87,13 @@ export default function CanvasView({ canvasId, local, onClose, docked = false, r
   latest.current = { content, title, art, status };
 
   useBackClose(!docked, onClose);
+
+  // Beri tahu chat setiap ada revisi tersimpan, supaya tampilan inline ikut terbaru.
+  const onSavedRef = useRef(onSaved);
+  onSavedRef.current = onSaved;
+  useEffect(() => {
+    if (art?.id && !local && art.revision) onSavedRef.current?.(art);
+  }, [art, local]);
 
   const kind = canvasDb.kindOf(art);
   const isCode = kind === 'code' || kind === 'html' || kind === 'svg';

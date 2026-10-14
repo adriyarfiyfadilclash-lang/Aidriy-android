@@ -15,10 +15,11 @@ export function buildSystemPrompt({ profile, memories, project, settings, incogn
     `Tanggal hari ini: ${date}.`,
   ];
 
-  if (profile?.full_name || profile?.nickname || profile?.about) {
+  if (profile?.full_name || profile?.nickname || profile?.about || profile?.occupation) {
     const lines = ['', '## Tentang pengguna'];
     if (profile.full_name) lines.push(`Nama: ${profile.full_name}`);
     if (profile.nickname) lines.push(`Panggil pengguna: ${profile.nickname}`);
+    if (profile.occupation) lines.push(`Pekerjaan: ${profile.occupation}`);
     if (profile.about) lines.push(`Preferensi dan konteks dari pengguna:\n${profile.about}`);
     parts.push(lines.join('\n'));
   }

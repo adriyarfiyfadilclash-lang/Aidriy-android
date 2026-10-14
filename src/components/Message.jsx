@@ -1,48 +1,31 @@
 import { memo, useMemo, useState } from 'react';
-import { AlertCircle, Brain, Check, ChevronDown, Code2, Copy, FileText, Globe, ImageIcon, RotateCcw, Square, Volume2 } from 'lucide-react';
+import {
+  AlertCircle,
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  FileText,
+  Globe,
+  ImageIcon,
+  RotateCcw,
+  Share2,
+  Square,
+  ThumbsDown,
+  ThumbsUp,
+  Volume2,
+  X,
+} from 'lucide-react';
+import CanvasBlock from './CanvasBlock';
+import { useApp } from '../state';
 import Markdown, { SourcesContext } from './Markdown';
 import ImageGallery from './ImageGallery';
 import Sources from './Sources';
 import { splitSegments, plainText, speakableText } from '../lib/parse';
 import { copyText, speak, stopSpeaking, tap } from '../lib/native';
 import { formatSize } from '../lib/files';
-
-const KIND = { document: 'Dokumen', code: 'Kode', html: 'Halaman web', svg: 'Diagram SVG' };
-
-function CanvasCard({ seg, info, streaming, onOpen, onApply, onDismiss }) {
-  const done = seg.complete && !streaming;
-  let sub;
-  if (!seg.complete) sub = seg.action === 'update' ? 'Memperbarui Canvas…' : 'Membuat Canvas…';
-  else if (!info) sub = streaming ? 'Menyimpan…' : `${KIND[seg.kind] || 'Canvas'}`;
-  else if (info.status === 'conflict') sub = 'Versi AI belum diterapkan: Canvas sedang kamu sunting';
-  else if (info.status === 'error') sub = `Gagal disimpan: ${info.error}`;
-  else if (info.status === 'local') sub = `${KIND[seg.kind] || 'Canvas'} · incognito`;
-  else if (info.status === 'dismissed') sub = 'Versi AI diabaikan';
-  else sub = `${KIND[seg.kind] || 'Canvas'} · ${info.status === 'updated' ? 'Diperbarui' : 'Dibuat'} · Rev ${info.revision}`;
-
-  return (
-    <div className={`canvas-card ${info?.status === 'conflict' ? 'conflict' : ''}`}>
-      <button type="button" className="canvas-card-main" onClick={() => done && onOpen(seg, info)} disabled={!done}>
-        <span className="artifact-card-icon">{seg.kind === 'code' ? <Code2 size={22} /> : <FileText size={22} />}</span>
-        <span className="artifact-card-text">
-          <span className="artifact-card-title truncate">{seg.title}</span>
-          <span className="artifact-card-sub">{sub}</span>
-        </span>
-        {!done ? <span className="spinner small" /> : <span className="canvas-open-pill">Buka</span>}
-      </button>
-      {info?.status === 'conflict' && done && (
-        <div className="canvas-card-actions">
-          <button type="button" className="btn btn-ghost small-btn" onClick={onDismiss}>
-            Abaikan
-          </button>
-          <button type="button" className="btn btn-dark small-btn" onClick={onApply}>
-            Terapkan versi AI
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function AttachmentChips({ items }) {
   if (!items?.length) return null;
@@ -70,8 +53,27 @@ function findBlock(blocks, query) {
   return (blocks || []).find((b) => b.query.toLowerCase() === q);
 }
 
-function Message({ msg, isLast, busy, onRegenerate, onOpenCanvas, onCanvasConflict, onRetryImages, voice }) {
+export const FEEDBACK_REASONS = ['Tidak akurat', 'Tidak mengikuti instruksi', 'Terlalu panjang', 'Kurang lengkap', 'Tidak membantu', 'Lainnya'];
+
+function Message({
+  msg,
+  isLast,
+  busy,
+  versions,
+  onRegenerate,
+  onOpenCanvas,
+  onCanvasConflict,
+  onRetryCanvas,
+  onRetryImages,
+  onFeedback,
+  onShare,
+  canvasRows,
+  latestCanvas,
+  voice,
+}) {
+  const { showToast } = useApp();
   const [copied, setCopied] = useState(false);
+  const [askReason, setAskReason] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const segments = useMemo(() => (msg.role === 'assistant' ? splitSegments(msg.content) : []), [msg.role, msg.content]);
@@ -124,15 +126,20 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenCanvas, onCanvasConfli
           return b ? <ImageGallery key={i} block={b} onRetry={retry(b)} /> : null;
         }
         const info = msg.meta?.canvases?.[s.index];
+        const row = info?.id ? canvasRows?.[info.id] : null;
+        const isLatest = !info?.id || !latestCanvas?.[info.id] || latestCanvas[info.id] === `${msg.id}:${s.index}`;
         return (
-          <CanvasCard
+          <CanvasBlock
             key={i}
             seg={s}
             info={info}
+            row={isLatest && info?.status !== 'conflict' && info?.status !== 'dismissed' ? row : null}
+            isLatest={isLatest}
             streaming={streaming}
             onOpen={onOpenCanvas}
             onApply={() => onCanvasConflict?.(msg.id, s.index, 'apply')}
             onDismiss={() => onCanvasConflict?.(msg.id, s.index, 'dismiss')}
+            onRetry={onRetryCanvas && !streaming ? () => onRetryCanvas(msg.id) : undefined}
           />
         );
       })}
@@ -165,20 +172,91 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenCanvas, onCanvasConfli
       {sources.length > 0 && !streaming && <Sources sources={sources} />}
 
       {!streaming && msg.content && (
-        <div className="msg-actions">
+        <div className="msg-actions" role="toolbar" aria-label="Aksi pesan">
+          {versions && versions.count > 1 && (
+            <span className="ver-nav" aria-label={`Versi ${versions.index} dari ${versions.count}`}>
+              <button type="button" className="action-btn sm" aria-label="Versi sebelumnya" disabled={versions.index <= 1 || busy} onClick={versions.onPrev}>
+                <ChevronLeft size={18} />
+              </button>
+              <span className="ver-count">
+                {versions.index}/{versions.count}
+              </span>
+              <button type="button" className="action-btn sm" aria-label="Versi berikutnya" disabled={versions.index >= versions.count || busy} onClick={versions.onNext}>
+                <ChevronRight size={18} />
+              </button>
+            </span>
+          )}
           <button
             type="button"
             className="action-btn"
             aria-label="Salin"
             onClick={async () => {
               tap();
-              await copyText(plainText(msg.content));
+              const ok = await copyText(plainText(msg.content));
+              if (!ok) {
+                showToast('Gagal menyalin teks', 'error');
+                return;
+              }
               setCopied(true);
+              showToast('Teks disalin');
               setTimeout(() => setCopied(false), 1500);
             }}
           >
             {copied ? <Check size={18} /> : <Copy size={18} />}
           </button>
+          {isLast && onRegenerate && (
+            <button type="button" className="action-btn" aria-label="Buat ulang jawaban" disabled={busy} onClick={onRegenerate}>
+              <RotateCcw size={18} />
+            </button>
+          )}
+          {onFeedback && (
+            <>
+              <button
+                type="button"
+                className={`action-btn ${msg.feedback === 1 ? 'on' : ''}`}
+                aria-label="Suka"
+                aria-pressed={msg.feedback === 1}
+                onClick={() => {
+                  tap();
+                  setAskReason(false);
+                  onFeedback(msg, msg.feedback === 1 ? 0 : 1);
+                }}
+              >
+                <ThumbsUp size={18} fill={msg.feedback === 1 ? 'currentColor' : 'none'} />
+              </button>
+              <button
+                type="button"
+                className={`action-btn ${msg.feedback === -1 ? 'on' : ''}`}
+                aria-label="Tidak suka"
+                aria-pressed={msg.feedback === -1}
+                onClick={() => {
+                  tap();
+                  if (msg.feedback === -1) {
+                    setAskReason(false);
+                    onFeedback(msg, 0);
+                  } else {
+                    setAskReason(true);
+                    onFeedback(msg, -1);
+                  }
+                }}
+              >
+                <ThumbsDown size={18} fill={msg.feedback === -1 ? 'currentColor' : 'none'} />
+              </button>
+            </>
+          )}
+          {onShare && (
+            <button
+              type="button"
+              className="action-btn"
+              aria-label="Bagikan"
+              onClick={() => {
+                tap();
+                onShare(msg);
+              }}
+            >
+              <Share2 size={18} />
+            </button>
+          )}
           <button
             type="button"
             className="action-btn"
@@ -201,12 +279,35 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenCanvas, onCanvasConfli
           >
             {speaking ? <Square size={16} /> : <Volume2 size={18} />}
           </button>
-          {isLast && onRegenerate && !busy && (
-            <button type="button" className="action-btn" aria-label="Buat ulang" onClick={onRegenerate}>
-              <RotateCcw size={18} />
-            </button>
-          )}
           {msg.meta?.model && <span className="msg-model">{msg.meta.model}</span>}
+        </div>
+      )}
+
+      {askReason && msg.feedback === -1 && (
+        <div className="fb-reasons">
+          <div className="fb-reasons-head">
+            <span>Apa yang kurang? (opsional)</span>
+            <button type="button" className="action-btn sm" aria-label="Tutup" onClick={() => setAskReason(false)}>
+              <X size={16} />
+            </button>
+          </div>
+          <div className="fb-chips">
+            {FEEDBACK_REASONS.map((r) => (
+              <button
+                key={r}
+                type="button"
+                className={`chip ${msg.feedback_reason === r ? 'on' : ''}`}
+                onClick={() => {
+                  tap();
+                  onFeedback(msg, -1, r);
+                  setAskReason(false);
+                  showToast('Terima kasih atas masukannya');
+                }}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>

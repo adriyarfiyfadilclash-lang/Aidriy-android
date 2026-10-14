@@ -52,7 +52,7 @@ export async function getCanvas(id) {
   return check(await supabase.from('artifacts').select(COLS).eq('id', id).maybeSingle());
 }
 
-export async function listConversationCanvases(conversationId) {
+export async function listConversationCanvases(conversationId, limit = 6) {
   if (!conversationId) return [];
   return check(
     await supabase
@@ -60,7 +60,7 @@ export async function listConversationCanvases(conversationId) {
       .select(COLS)
       .eq('conversation_id', conversationId)
       .order('updated_at', { ascending: false })
-      .limit(6)
+      .limit(limit)
   );
 }
 

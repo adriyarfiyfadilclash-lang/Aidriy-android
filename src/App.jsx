@@ -19,6 +19,8 @@ import ProfilePage from './pages/settings/ProfilePage';
 import KeysPage from './pages/settings/KeysPage';
 import CapabilitiesPage from './pages/settings/CapabilitiesPage';
 import MemoryPage from './pages/settings/MemoryPage';
+import MemorySummaryPage from './pages/settings/MemorySummaryPage';
+import SavedMemoriesPage from './pages/settings/SavedMemoriesPage';
 import VoicePage from './pages/settings/VoicePage';
 import UsagePage from './pages/settings/UsagePage';
 import PrivacyPage from './pages/settings/PrivacyPage';
@@ -88,6 +90,8 @@ export default function App() {
         <Route path="/settings/keys" element={<KeysPage />} />
         <Route path="/settings/capabilities" element={<CapabilitiesPage />} />
         <Route path="/settings/memory" element={<MemoryPage />} />
+        <Route path="/settings/memory/summary" element={<MemorySummaryPage />} />
+        <Route path="/settings/memory/saved" element={<SavedMemoriesPage />} />
         <Route path="/settings/voice" element={<VoicePage />} />
         <Route path="/settings/usage" element={<UsagePage />} />
         <Route path="/settings/privacy" element={<PrivacyPage />} />

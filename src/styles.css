@@ -155,6 +155,10 @@ textarea {
   flex-direction: column;
   gap: 14px;
 }
+.page-scroll > *,
+.sheet-body > *:not(.model-list) {
+  flex-shrink: 0;
+}
 .splash,
 .center-fill {
   flex: 1;

@@ -1,0 +1,84 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Pasang dependensi
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build web
+        run: npm run build
+
+      - name: Simpan hasil web (untuk pengecekan)
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist
+          retention-days: 7
+
+      - name: Siapkan proyek Android
+        run: |
+          npx cap add android
+          node scripts/patch-android.mjs
+          npx @capacitor/assets generate --android \
+            --iconBackgroundColor '#C2613C' --iconBackgroundColorDark '#C2613C' \
+            --splashBackgroundColor '#F7F4EE' --splashBackgroundColorDark '#1C1A17' || echo "Lewati pembuatan ikon"
+          npx cap sync android
+
+      - name: Kunci tanda tangan tetap (agar update bisa dipasang)
+        run: |
+          mkdir -p ~/.android
+          cp ci/debug.keystore ~/.android/debug.keystore
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Siapkan berkas APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk "out/AIDRIY-v1.0.${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIDRIY-apk
+          path: out/*.apk
+
+      - name: Rilis APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: A.I.DRIY v1.0.${{ github.run_number }}
+          body: |
+            Unduh berkas **AIDRIY-v1.0.${{ github.run_number }}.apk** di bawah ini dari HP Android, lalu buka untuk memasang.
+            Jika diminta, izinkan "Pasang aplikasi tidak dikenal" untuk browser/file manager.
+          files: out/*.apk
+          make_latest: true

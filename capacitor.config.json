@@ -1,0 +1,12 @@
+{
+  "appId": "com.aidriy.app",
+  "appName": "A.I.DRIY",
+  "webDir": "dist",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "force"
+  },
+  "plugins": {
+    "Keyboard": { "resize": "body", "resizeOnFullScreen": true },
+    "StatusBar": { "overlaysWebView": false }
+  }
+}

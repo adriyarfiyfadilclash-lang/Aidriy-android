@@ -2961,3 +2961,13 @@ button.p-row:active,
   font-family: var(--font-mono);
   font-size: 13px;
 }
+
+@media (min-width: 640px) {
+  .toast {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 480px;
+  }
+}

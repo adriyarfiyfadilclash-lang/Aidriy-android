@@ -74,7 +74,16 @@ export function AppProvider({ children }) {
   const refreshProfile = useCallback(async () => {
     if (!uid) return;
     try {
-      setProfile(await db.getProfile(uid));
+      const p = await db.getProfile(uid);
+      setProfile(p);
+      // Personalisasi tersimpan di cloud agar sama di semua perangkat
+      if (p?.settings?.personalization) {
+        setSettingsState((prev) => {
+          const next = { ...prev, personalization: p.settings.personalization };
+          saveSettings(next);
+          return next;
+        });
+      }
     } catch {
       /* jaringan */
     }
@@ -107,13 +116,14 @@ export function AppProvider({ children }) {
       const dark = settings.theme === 'dark' || (settings.theme === 'system' && mq.matches);
       document.documentElement.dataset.theme = dark ? 'dark' : 'light';
       document.documentElement.dataset.font = settings.font;
+      document.documentElement.dataset.accent = settings.accent || 'terracotta';
       document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#1C1A17' : '#F7F4EE');
       applyStatusBar(dark);
     };
     apply();
     mq.addEventListener('change', apply);
     return () => mq.removeEventListener('change', apply);
-  }, [settings.theme, settings.font]);
+  }, [settings.theme, settings.font, settings.accent]);
 
   useEffect(() => setHapticsEnabled(settings.haptics), [settings.haptics]);
 

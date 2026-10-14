@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FolderClosed, MessageCircle, Plus, Search, Shapes, Star, X } from 'lucide-react';
+import { ArrowLeft, FolderClosed, LibraryBig, MessageCircle, Plus, Search, Star, X } from 'lucide-react';
 import { useApp } from '../state';
 import { searchChats } from '../lib/db';
 import { tap } from '../lib/native';
@@ -103,9 +103,9 @@ export default function Drawer() {
                   <FolderClosed size={26} strokeWidth={1.5} />
                   <span>Proyek</span>
                 </button>
-                <button type="button" className="drawer-item big" onClick={() => go('/artifacts')}>
-                  <Shapes size={26} strokeWidth={1.5} />
-                  <span>Artefak</span>
+                <button type="button" className="drawer-item big" onClick={() => go('/library')}>
+                  <LibraryBig size={26} strokeWidth={1.5} />
+                  <span>Pustaka</span>
                 </button>
               </nav>
               <div className="drawer-divider" />

@@ -7,18 +7,40 @@ import { splitSegments, plainText, speakableText } from '../lib/parse';
 import { copyText, speak, stopSpeaking, tap } from '../lib/native';
 import { formatSize } from '../lib/files';
 
-function ArtifactCard({ seg, onOpen }) {
+const KIND = { document: 'Dokumen', code: 'Kode', html: 'Halaman web', svg: 'Diagram SVG' };
+
+function CanvasCard({ seg, info, streaming, onOpen, onApply, onDismiss }) {
+  const done = seg.complete && !streaming;
+  let sub;
+  if (!seg.complete) sub = seg.action === 'update' ? 'Memperbarui Canvas…' : 'Membuat Canvas…';
+  else if (!info) sub = streaming ? 'Menyimpan…' : `${KIND[seg.kind] || 'Canvas'}`;
+  else if (info.status === 'conflict') sub = 'Versi AI belum diterapkan: Canvas sedang kamu sunting';
+  else if (info.status === 'error') sub = `Gagal disimpan: ${info.error}`;
+  else if (info.status === 'local') sub = `${KIND[seg.kind] || 'Canvas'} · incognito`;
+  else if (info.status === 'dismissed') sub = 'Versi AI diabaikan';
+  else sub = `${KIND[seg.kind] || 'Canvas'} · ${info.status === 'updated' ? 'Diperbarui' : 'Dibuat'} · Rev ${info.revision}`;
+
   return (
-    <button type="button" className="artifact-card" onClick={() => seg.complete && onOpen(seg)} disabled={!seg.complete}>
-      <span className="artifact-card-icon">{seg.kind === 'code' ? <Code2 size={22} /> : <FileText size={22} />}</span>
-      <span className="artifact-card-text">
-        <span className="artifact-card-title truncate">{seg.title}</span>
-        <span className="artifact-card-sub">
-          {seg.complete ? `Ketuk untuk membuka · ${seg.kind === 'code' ? seg.language : seg.kind.toUpperCase()}` : 'Sedang dibuat…'}
+    <div className={`canvas-card ${info?.status === 'conflict' ? 'conflict' : ''}`}>
+      <button type="button" className="canvas-card-main" onClick={() => done && onOpen(seg, info)} disabled={!done}>
+        <span className="artifact-card-icon">{seg.kind === 'code' ? <Code2 size={22} /> : <FileText size={22} />}</span>
+        <span className="artifact-card-text">
+          <span className="artifact-card-title truncate">{seg.title}</span>
+          <span className="artifact-card-sub">{sub}</span>
         </span>
-      </span>
-      {!seg.complete && <span className="spinner small" />}
-    </button>
+        {!done ? <span className="spinner small" /> : <span className="canvas-open-pill">Buka</span>}
+      </button>
+      {info?.status === 'conflict' && done && (
+        <div className="canvas-card-actions">
+          <button type="button" className="btn btn-ghost small-btn" onClick={onDismiss}>
+            Abaikan
+          </button>
+          <button type="button" className="btn btn-dark small-btn" onClick={onApply}>
+            Terapkan versi AI
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -48,7 +70,7 @@ function findBlock(blocks, query) {
   return (blocks || []).find((b) => b.query.toLowerCase() === q);
 }
 
-function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, onRetryImages, voice }) {
+function Message({ msg, isLast, busy, onRegenerate, onOpenCanvas, onCanvasConflict, onRetryImages, voice }) {
   const [copied, setCopied] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -101,7 +123,18 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, onRetryImage
           const b = findBlock(blocks, s.query);
           return b ? <ImageGallery key={i} block={b} onRetry={retry(b)} /> : null;
         }
-        return <ArtifactCard key={i} seg={s} onOpen={onOpenArtifact} />;
+        const info = msg.meta?.canvases?.[s.index];
+        return (
+          <CanvasCard
+            key={i}
+            seg={s}
+            info={info}
+            streaming={streaming}
+            onOpen={onOpenCanvas}
+            onApply={() => onCanvasConflict?.(msg.id, s.index, 'apply')}
+            onDismiss={() => onCanvasConflict?.(msg.id, s.index, 'dismiss')}
+          />
+        );
       })}
 
       {streaming && !msg.content && !thinking && !msg.status && (

@@ -5,7 +5,10 @@ import { useApp } from '../state';
 import * as db from '../lib/db';
 import { PROVIDERS, effortLabel, shortModelName, streamChat } from '../lib/providers';
 import { buildSystemPrompt } from '../lib/prompt';
-import { extractMemories, imageQueries, plainText, splitSegments } from '../lib/parse';
+import { collapseArtifacts, extractMemories, imageQueries, plainText, splitSegments } from '../lib/parse';
+import * as canvasDb from '../lib/canvas';
+import { toAttachment as libraryToAttachment } from '../lib/library';
+import { isQuickQuestion } from '../lib/personalization';
 import { addSource, applySnippetCitations, marker } from '../lib/citations';
 import { searchImages } from '../lib/search/imageSearch';
 import { imageQueryFromText } from '../lib/search/intent';
@@ -17,7 +20,7 @@ import Composer from '../components/Composer';
 import Message from '../components/Message';
 import AttachSheet from '../components/AttachSheet';
 import ModelPicker from '../components/ModelPicker';
-import ArtifactViewer from '../components/ArtifactViewer';
+import CanvasView from '../components/CanvasView';
 import VoiceMode from '../components/VoiceMode';
 
 function makeTitle(text, atts) {
@@ -26,6 +29,18 @@ function makeTitle(text, atts) {
   if (t) return t.length > 60 ? `${t.slice(0, 57)}…` : t;
   if (atts?.length) return `Tentang ${atts[0].name}`.slice(0, 60);
   return 'Chat baru';
+}
+
+function useWide() {
+  const q = '(min-width: 900px)';
+  const [wide, setWide] = useState(() => window.matchMedia(q).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(q);
+    const fn = () => setWide(mq.matches);
+    mq.addEventListener('change', fn);
+    return () => mq.removeEventListener('change', fn);
+  }, []);
+  return wide;
 }
 
 function firstName(profile, user) {
@@ -53,7 +68,11 @@ export default function ChatPage() {
   const [webSearch, setWebSearch] = useState(settings.webSearch);
   const [newProjectId, setNewProjectId] = useState(searchParams.get('project'));
   const [sheet, setSheet] = useState(null); // attach | model | menu | project | rename | delete
-  const [viewer, setViewer] = useState(null);
+  const [canvasOpen, setCanvasOpen] = useState(null); // { id } | { localId }
+  const [canvasRefresh, setCanvasRefresh] = useState(0);
+  const [paneWidth, setPaneWidth] = useState(() => Number(localStorage.getItem('aidriy.canvasPane')) || 460);
+  const wide = useWide();
+  const localCanvasesRef = useRef(new Map());
   const [voiceOpen, setVoiceOpen] = useState(false);
 
   const createdRef = useRef(null);
@@ -80,12 +99,31 @@ export default function ChatPage() {
       setIncognito(false);
       setWebSearch(settings.webSearch);
       setNewProjectId(new URLSearchParams(location.search).get('project'));
+      setCanvasOpen(null);
+      localCanvasesRef.current = new Map();
       createdRef.current = null;
+      const fromLibrary = location.state?.attachLibrary;
+      if (Array.isArray(fromLibrary) && fromLibrary.length) {
+        (async () => {
+          setPreparing(true);
+          for (const it of fromLibrary) {
+            try {
+              const a = await libraryToAttachment(it);
+              setAttachments((prev) => [...prev, a]);
+            } catch (e) {
+              showToast(e.message, 'error');
+            }
+          }
+          setPreparing(false);
+          showToast('Lampiran dari Pustaka siap. Isinya baru dikirim ke AI saat kamu menekan Kirim.');
+        })();
+      }
       return;
     }
     if (createdRef.current === id) return;
     if (busyRef.current) abortRef.current?.abort();
     createdRef.current = null;
+    setCanvasOpen(null);
     let cancelled = false;
     setLoading(true);
     setIncognito(false);
@@ -163,7 +201,7 @@ export default function ChatPage() {
     list
       .filter((m) => !m.error || m.content)
       .map((m) => {
-        if (m.role === 'assistant') return { role: 'assistant', text: extractMemories(m.content || '').clean };
+        if (m.role === 'assistant') return { role: 'assistant', text: collapseArtifacts(extractMemories(m.content || '').clean) };
         const atts = (m.attachments || []).map((meta) => {
           const full = cacheRef.current.get(meta.id);
           if (full) return full;
@@ -174,6 +212,92 @@ export default function ChatPage() {
         });
         return { role: 'user', text: m.content || '', attachments: atts };
       });
+
+  // ---------- Canvas: simpan hasil AI (buat / perbarui revisi) ----------
+  const processCanvases = async (clean, convId, messageId, active, localOnly) => {
+    const segs = splitSegments(clean).filter((x) => x.type === 'artifact' && x.complete && x.content.trim());
+    const infos = [];
+    for (const seg of segs) {
+      if (localOnly) {
+        const known = seg.action === 'update' && seg.id && localCanvasesRef.current.has(seg.id);
+        const lid = known ? seg.id : `local-${Date.now().toString(36)}-${seg.index}`;
+        localCanvasesRef.current.set(lid, { id: lid, localId: lid, title: seg.title, kind: seg.kind, language: seg.language, content: seg.content });
+        infos[seg.index] = { id: lid, local: true, status: 'local', revision: 1 };
+        if (known && canvasOpen?.localId === lid) setCanvasRefresh((n) => n + 1);
+        continue;
+      }
+      let target = seg.action === 'update' && seg.id ? active.find((c) => c.id === seg.id) : null;
+      if (!target && seg.action === 'update' && /^[0-9a-f-]{36}$/i.test(seg.id || '')) {
+        try {
+          const row = await canvasDb.getCanvas(seg.id);
+          if (row && row.conversation_id === convId) target = row;
+        } catch {
+          /* buat baru */
+        }
+      }
+      try {
+        if (target) {
+          try {
+            const row = await canvasDb.saveCanvas(target.id, target.revision, seg.content, { title: seg.title, source: 'ai' });
+            infos[seg.index] = { id: row.id, status: 'updated', revision: row.revision };
+            setCanvasRefresh((n) => n + 1);
+          } catch (e) {
+            if (e instanceof canvasDb.CanvasConflictError) infos[seg.index] = { id: target.id, status: 'conflict', revision: target.revision };
+            else throw e;
+          }
+        } else {
+          const row = await canvasDb.createCanvas({
+            conversation_id: convId,
+            message_id: messageId,
+            title: seg.title,
+            kind: seg.kind,
+            language: seg.language,
+            content: seg.content,
+          });
+          infos[seg.index] = { id: row.id, status: 'created', revision: row.revision };
+          active.push({ ...row, kind: canvasDb.kindOf(row) });
+        }
+      } catch (e) {
+        infos[seg.index] = { status: 'error', error: e.message };
+      }
+    }
+    return Array.from({ length: infos.length }, (_, i) => infos[i] || null);
+  };
+
+  const resolveCanvasConflict = async (messageId, index, action) => {
+    const msg = messagesRef.current.find((m) => m.id === messageId);
+    const info = msg?.meta?.canvases?.[index];
+    if (!info) return;
+    let next = info;
+    if (action === 'dismiss') {
+      next = { ...info, status: 'dismissed' };
+    } else {
+      const seg = splitSegments(msg.content).find((x) => x.type === 'artifact' && x.index === index);
+      try {
+        const latest = await canvasDb.getCanvas(info.id);
+        if (!latest) throw new Error('Canvas sudah dihapus');
+        const row = await canvasDb.saveCanvas(info.id, latest.revision, seg.content, { title: seg.title, source: 'ai' });
+        next = { id: row.id, status: 'updated', revision: row.revision };
+        setCanvasRefresh((n) => n + 1);
+        showToast(`Versi AI diterapkan sebagai revisi ${row.revision}`);
+      } catch (e) {
+        showToast(e.message, 'error');
+        return;
+      }
+    }
+    const canvases = [...msg.meta.canvases];
+    canvases[index] = next;
+    const meta = { ...msg.meta, canvases };
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, meta } : m)));
+    if (!String(messageId).startsWith('ai-')) db.updateMessageMeta(messageId, meta).catch(() => {});
+  };
+
+  const openCanvas = (seg, info) => {
+    tap();
+    if (info?.local) setCanvasOpen({ localId: info.id });
+    else if (info?.id) setCanvasOpen({ id: info.id });
+    else setCanvasOpen({ legacy: { id: `legacy-${seg.index}`, title: seg.title, kind: seg.kind, language: seg.language, content: seg.content } });
+  };
 
   // ---------- Menjalankan AI ----------
   const runAssistant = async (convId, historyList, beforeSave) => {
@@ -243,7 +367,20 @@ export default function ChatPage() {
         /* lanjut tanpa memori */
       }
     }
-    const system = buildSystemPrompt({ profile, memories, project, settings, incognito });
+    let canvases = [];
+    if (incognito || !convId) {
+      canvases = [...localCanvasesRef.current.values()].map((c) => ({ ...c, revision: 1 }));
+    } else {
+      try {
+        canvases = (await canvasDb.listConversationCanvases(convId)).map((c) => ({ ...c, kind: canvasDb.kindOf(c) }));
+      } catch {
+        /* lanjut tanpa daftar Canvas */
+      }
+    }
+    const system = buildSystemPrompt({ profile, memories, project, settings, incognito, canvases });
+    const lastUserMsg = [...historyList].reverse().find((m) => m.role === 'user');
+    const quick = settings.personalization?.quickAnswers !== false && isQuickQuestion(lastUserMsg?.content, lastUserMsg?.attachments?.length);
+    const effort = quick ? 'off' : settings.effort;
     const controller = new AbortController();
     abortRef.current = controller;
     let usage = null;
@@ -256,7 +393,7 @@ export default function ChatPage() {
           apiKey,
           system,
           history: toProviderHistory(historyList),
-          effort: settings.effort,
+          effort,
           webSearch,
           signal: controller.signal,
         },
@@ -338,15 +475,22 @@ export default function ChatPage() {
     const meta = { ...baseMeta, images: imageBlocks.length ? snapshotImages() : undefined };
     setMessages((prev) => prev.map((m) => (m.id === tempId || m.tempId === tempId ? { ...m, meta } : m)));
 
+    if (incognito || !convId) {
+      const infos = await processCanvases(clean, null, null, canvases, true);
+      if (infos.length) setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, meta: { ...m.meta, canvases: infos } } : m)));
+    }
+
     if (!incognito && convId && (clean.trim() || imageBlocks.length)) {
       try {
         await beforeSave;
         const saved = await db.insertMessage({ conversation_id: convId, role: 'assistant', content: clean, meta });
         setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: saved.id } : m)));
-        const arts = splitSegments(clean)
-          .filter((s) => s.type === 'artifact' && s.complete)
-          .map((s) => ({ conversation_id: convId, message_id: saved.id, title: s.title, kind: s.kind, language: s.language, content: s.content }));
-        if (settings.artifacts && arts.length) await db.saveArtifacts(arts);
+        const infos = await processCanvases(clean, convId, saved.id, canvases, false);
+        if (infos.length) {
+          const withCanvas = { ...meta, canvases: infos };
+          setMessages((prev) => prev.map((m) => (m.id === saved.id ? { ...m, meta: withCanvas } : m)));
+          await db.updateMessageMeta(saved.id, withCanvas);
+        }
         await db.updateConversation(convId, { provider, model });
         refreshConversations();
         if (settings.memory && newMems.length) {
@@ -600,8 +744,47 @@ export default function ChatPage() {
     );
   }
 
+  const canvasProps = canvasOpen
+    ? {
+        canvasId: canvasOpen.id,
+        local: canvasOpen.localId ? localCanvasesRef.current.get(canvasOpen.localId) : canvasOpen.legacy,
+        refreshKey: canvasRefresh,
+        onClose: () => setCanvasOpen(null),
+        onLocalChange: canvasOpen.localId
+          ? (patch) => {
+              const cur = localCanvasesRef.current.get(canvasOpen.localId);
+              if (cur) localCanvasesRef.current.set(canvasOpen.localId, { ...cur, ...patch });
+            }
+          : undefined,
+      }
+    : null;
+  const docked = !!canvasProps && wide;
+
+  const startResize = (e) => {
+    e.preventDefault();
+    const move = (ev) => {
+      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 320), window.innerWidth - 360);
+      setPaneWidth(w);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setPaneWidth((w) => {
+        try {
+          localStorage.setItem('aidriy.canvasPane', String(Math.round(w)));
+        } catch {
+          /* abaikan */
+        }
+        return w;
+      });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   return (
-    <div className="page chat-page">
+    <div className={`page chat-page ${docked ? 'with-canvas' : ''}`}>
+      <div className="chat-col">
       {header}
 
       <main className="chat-scroll" ref={listRef} onScroll={onScroll}>
@@ -636,7 +819,8 @@ export default function ChatPage() {
                 isLast={i === messages.length - 1}
                 busy={busy}
                 onRegenerate={m.role === 'assistant' ? regenerate : undefined}
-                onOpenArtifact={(seg) => setViewer(seg)}
+                onOpenCanvas={openCanvas}
+                onCanvasConflict={resolveCanvasConflict}
                 onRetryImages={retryImages}
                 voice={settings.voice}
               />
@@ -677,6 +861,17 @@ export default function ChatPage() {
           placeholder={incognito ? 'Chat rahasia dengan A.I.DRIY…' : 'Chat dengan A.I.DRIY…'}
         />
       </div>
+      </div>
+
+      {docked && (
+        <>
+          <div className="canvas-resizer" onPointerDown={startResize} role="separator" aria-orientation="vertical" aria-label="Ubah lebar Canvas" />
+          <aside className="canvas-pane" style={{ width: paneWidth }}>
+            <CanvasView key={canvasOpen.id || canvasOpen.localId || 'legacy'} docked {...canvasProps} />
+          </aside>
+        </>
+      )}
+      {canvasProps && !wide && <CanvasView key={canvasOpen.id || canvasOpen.localId || 'legacy'} {...canvasProps} />}
 
       <AttachSheet
         open={sheet === 'attach'}
@@ -765,7 +960,6 @@ export default function ChatPage() {
         }}
       />
 
-      {viewer && <ArtifactViewer artifact={viewer} onClose={() => setViewer(null)} />}
 
       <VoiceMode
         open={voiceOpen}

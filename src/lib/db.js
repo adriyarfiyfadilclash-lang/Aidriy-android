@@ -122,26 +122,7 @@ export async function deleteProject(id) {
   check(await supabase.from('projects').delete().eq('id', id));
 }
 
-// ---------- Artefak ----------
-export async function listArtifacts() {
-  return check(
-    await supabase
-      .from('artifacts')
-      .select('id,title,kind,language,conversation_id,updated_at')
-      .order('updated_at', { ascending: false })
-      .limit(200)
-  );
-}
-export async function getArtifact(id) {
-  return check(await supabase.from('artifacts').select('*').eq('id', id).maybeSingle());
-}
-export async function saveArtifacts(rows) {
-  if (!rows.length) return [];
-  return check(await supabase.from('artifacts').insert(rows).select());
-}
-export async function deleteArtifact(id) {
-  check(await supabase.from('artifacts').delete().eq('id', id));
-}
+// Canvas (tabel artifacts) dikelola di lib/canvas.js
 
 // ---------- Memori ----------
 export async function listMemories() {
@@ -194,13 +175,14 @@ export async function attachmentUrl(path) {
 
 // ---------- Ekspor ----------
 export async function exportAll() {
-  const [profile, conversations, messages, projects, artifacts, memories] = await Promise.all([
+  const [profile, conversations, messages, projects, artifacts, memories, library] = await Promise.all([
     supabase.from('profiles').select('*'),
     supabase.from('conversations').select('*'),
     supabase.from('messages').select('id,conversation_id,role,content,attachments,meta,created_at'),
     supabase.from('projects').select('*'),
     supabase.from('artifacts').select('*'),
     supabase.from('memories').select('*'),
+    supabase.from('library_items').select('id,title,item_type,mime_type,size_bytes,is_favorite,created_at,updated_at'),
   ]);
   return {
     exported_at: new Date().toISOString(),
@@ -210,5 +192,6 @@ export async function exportAll() {
     messages: check(messages),
     artifacts: check(artifacts),
     memories: check(memories),
+    library_items: check(library),
   };
 }

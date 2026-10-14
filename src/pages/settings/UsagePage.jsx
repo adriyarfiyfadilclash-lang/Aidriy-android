@@ -62,7 +62,7 @@ export default function UsagePage() {
             </div>
             <div className="stat">
               <b>{fmt(totals.artifacts)}</b>
-              <span>Artefak</span>
+              <span>Canvas</span>
             </div>
             <div className="stat">
               <b>{fmt(totals.memories)}</b>

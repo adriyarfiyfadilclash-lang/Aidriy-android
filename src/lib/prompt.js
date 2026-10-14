@@ -1,4 +1,6 @@
-export function buildSystemPrompt({ profile, memories, project, settings, incognito }) {
+import { personalizationPrompt } from './personalization';
+
+export function buildSystemPrompt({ profile, memories, project, settings, incognito, canvases }) {
   const now = new Date();
   const date = now.toLocaleDateString('id-ID', {
     weekday: 'long',
@@ -59,15 +61,32 @@ export function buildSystemPrompt({ profile, memories, project, settings, incogn
     parts.push(
       [
         '',
-        '## Artefak',
-        'Bila membuat konten mandiri yang substansial dan akan dipakai ulang — halaman atau aplikasi web, komponen interaktif, game, diagram SVG, dokumen panjang, atau kode lebih dari ±20 baris — bungkus dengan tag:',
-        '<artifact title="Judul singkat" type="html|svg|markdown|code" language="bahasa-kode-bila-type-code">',
-        '...isi...',
+        '## Canvas',
+        'Canvas adalah ruang kerja terpisah untuk HASIL AKHIR yang akan disalin, diedit, atau dipakai ulang.',
+        'Gunakan Canvas untuk: pesan, ucapan, caption, dan balasan siap kirim; email, surat resmi, memo, dokumen; artikel, naskah video, materi, laporan; kode program, konfigurasi, file teks; tabel, checklist, rencana kerja, template; ringkasan atau ekstraksi yang diminta dalam format siap pakai; halaman web, komponen interaktif, diagram SVG.',
+        'JANGAN gunakan Canvas untuk: pertanyaan faktual sederhana, obrolan santai, diskusi, penjelasan konsep, tanya jawab, brainstorming yang masih berupa diskusi, klarifikasi, atau jawaban singkat. Panjang jawaban, Markdown, atau daftar BUKAN alasan memakai Canvas. Bila ragu dan pengguna tidak meminta hasil siap pakai, jawab di chat biasa. Bila pengguna meminta Canvas secara eksplisit, gunakan Canvas.',
+        'Membuat Canvas baru:',
+        '<artifact action="create" title="Judul singkat" type="document|code|html|svg" language="bahasa kode bila type=code">',
+        'ISI LENGKAP',
         '</artifact>',
-        'Aturan: type="html" harus satu file HTML lengkap (CSS dan JS di dalamnya, library hanya dari CDN seperti cdnjs.cloudflare.com atau unpkg.com) dan nyaman di layar HP. Jangan pakai blok ``` di dalam artefak. Satu artefak per hasil; untuk mengubah artefak, tulis ulang versi lengkapnya dengan judul yang sama. Jelaskan singkat di luar tag. Untuk jawaban pendek, potongan kode kecil, atau penjelasan biasa, JANGAN pakai artefak.',
+        'Memperbarui Canvas yang sudah ada (pakai id dari daftar Canvas aktif):',
+        '<artifact action="update" id="ID-CANVAS" title="Judul" type="sama dengan sebelumnya">',
+        'ISI LENGKAP VERSI BARU (selalu seluruh isi, bukan potongan)',
+        '</artifact>',
+        'Aturan: di luar tag cukup 1–2 kalimat pengantar atau ringkasan perubahan; JANGAN mengulang isi Canvas di chat. Isi Canvas bersih dari kalimat pengantar seperti "Tentu, berikut hasilnya". type="document" ditulis dalam Markdown (tabel Markdown boleh). type="html" satu file lengkap yang nyaman di layar HP (library hanya dari CDN). Jangan pakai ``` di dalam tag. Bila pengguna meminta revisi pada Canvas yang ada (lebih formal, persingkat, terjemahkan, tambah bagian), PERBARUI Canvas itu dengan action="update" dan id-nya; buat Canvas baru hanya bila pengguna jelas meminta dokumen terpisah atau versi tambahan. Bila pengguna hanya bertanya tentang isi Canvas, jawab di chat tanpa tag.',
       ].join('\n')
     );
+    if (canvases?.length) {
+      const blocks = canvases.map((c) => {
+        const body = c.content.length > 12000 ? `${c.content.slice(0, 12000)}\n…[dipotong]` : c.content;
+        return `<canvas_state id="${c.id}" title="${(c.title || '').replace(/"/g, "'")}" type="${c.kind}" revision="${c.revision}">\n${body}\n</canvas_state>`;
+      });
+      parts.push(['', '## Canvas aktif di percakapan ini (isi terbaru, termasuk suntingan manual pengguna)', ...blocks].join('\n'));
+    }
   }
+
+  const personal = personalizationPrompt(settings.personalization);
+  if (personal) parts.push(personal);
 
   return parts.join('\n');
 }

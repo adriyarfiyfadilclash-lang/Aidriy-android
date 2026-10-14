@@ -9,6 +9,8 @@ import {
   KeyRound,
   LogOut,
   Moon,
+  Palette,
+  Smile,
   ShieldCheck,
   SlidersHorizontal,
   Smartphone,
@@ -26,6 +28,13 @@ import { LogoMark } from '../components/Logo';
 
 const THEME_LABEL = { system: 'Sistem', light: 'Terang', dark: 'Gelap' };
 const FONT_LABEL = { default: 'Bawaan', system: 'Sistem' };
+export const ACCENTS = [
+  { value: 'terracotta', label: 'Terakota', color: '#c2613c' },
+  { value: 'blue', label: 'Biru', color: '#2f6fd6' },
+  { value: 'green', label: 'Hijau', color: '#2e8a5e' },
+  { value: 'purple', label: 'Ungu', color: '#7a4fd0' },
+  { value: 'black', label: 'Hitam', color: '#1f1c18' },
+];
 export const APP_VERSION = '1.0.0';
 export const RELEASES_URL = 'https://github.com/adriyarfiyfadilclash-lang/Aidriy-android/releases/latest';
 
@@ -97,6 +106,7 @@ export default function SettingsPage() {
         </Group>
 
         <Group>
+          <Row icon={<Smile size={24} strokeWidth={1.5} />} title="Personalisasi" subtitle="Gaya bicara, format, instruksi khusus" onClick={() => navigate('/settings/personalization')} />
           <Row
             icon={<SlidersHorizontal size={24} strokeWidth={1.5} />}
             title="Kemampuan"
@@ -117,6 +127,17 @@ export default function SettingsPage() {
             title="Mode warna"
             subtitle={THEME_LABEL[settings.theme]}
             onClick={() => setDialog('theme')}
+          />
+          <Row
+            icon={<Palette size={24} strokeWidth={1.5} />}
+            title="Warna aksen"
+            right={
+              <span className="accent-value">
+                <span className="accent-dot" style={{ background: (ACCENTS.find((a) => a.value === settings.accent) || ACCENTS[0]).color }} />
+                {(ACCENTS.find((a) => a.value === settings.accent) || ACCENTS[0]).label}
+              </span>
+            }
+            onClick={() => setDialog('accent')}
           />
           <Row icon={<Type size={24} strokeWidth={1.5} />} title="Gaya font" subtitle={FONT_LABEL[settings.font]} onClick={() => setDialog('font')} />
           <Row icon={<AudioLines size={24} strokeWidth={1.5} />} title="Suara" onClick={() => navigate('/settings/voice')} />
@@ -160,6 +181,14 @@ export default function SettingsPage() {
           { value: 'light', label: 'Terang', icon: <Sun size={24} strokeWidth={1.5} /> },
           { value: 'dark', label: 'Gelap', icon: <Moon size={24} strokeWidth={1.5} /> },
         ]}
+      />
+      <ChoiceDialog
+        open={dialog === 'accent'}
+        onClose={() => setDialog(null)}
+        title="Warna aksen"
+        value={settings.accent || 'terracotta'}
+        onChange={(v) => setSettings({ accent: v })}
+        options={ACCENTS.map((a) => ({ value: a.value, label: a.label, icon: <span className="accent-dot big" style={{ background: a.color }} /> }))}
       />
       <ChoiceDialog
         open={dialog === 'font'}

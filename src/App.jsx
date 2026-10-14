@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { App as CapApp } from '@capacitor/app';
 import { useApp, popCloser } from './state';
 import { isNative } from './lib/native';
@@ -11,8 +11,9 @@ import ChatPage from './pages/ChatPage';
 import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import ProjectEditPage from './pages/ProjectEditPage';
-import ArtifactsPage from './pages/ArtifactsPage';
-import ArtifactPage from './pages/ArtifactPage';
+import LibraryPage from './pages/LibraryPage';
+import CanvasPage from './pages/CanvasPage';
+import PersonalizationPage from './pages/settings/PersonalizationPage';
 import SettingsPage from './pages/SettingsPage';
 import ProfilePage from './pages/settings/ProfilePage';
 import KeysPage from './pages/settings/KeysPage';
@@ -77,8 +78,11 @@ export default function App() {
         <Route path="/projects/new" element={<ProjectEditPage />} />
         <Route path="/projects/:id" element={<ProjectDetailPage />} />
         <Route path="/projects/:id/edit" element={<ProjectEditPage />} />
-        <Route path="/artifacts" element={<ArtifactsPage />} />
-        <Route path="/artifacts/:id" element={<ArtifactPage />} />
+        <Route path="/library" element={<LibraryPage />} />
+        <Route path="/canvas/:id" element={<CanvasPage />} />
+        <Route path="/artifacts" element={<Navigate to="/library?filter=canvas" replace />} />
+        <Route path="/artifacts/:id" element={<CanvasPage />} />
+        <Route path="/settings/personalization" element={<PersonalizationPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/profile" element={<ProfilePage />} />
         <Route path="/settings/keys" element={<KeysPage />} />

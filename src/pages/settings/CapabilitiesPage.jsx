@@ -29,9 +29,9 @@ export default function CapabilitiesPage() {
           />
           <Row
             icon={<Shapes size={24} strokeWidth={1.5} />}
-            title="Artefak"
-            subtitle="AI membuat halaman, game, diagram, dan dokumen yang bisa dibuka & disimpan"
-            right={<Toggle checked={settings.artifacts} onChange={(v) => setSettings({ artifacts: v })} label="Artefak" />}
+            title="Canvas"
+            subtitle="Hasil siap pakai (email, dokumen, kode, halaman web) dibuat terpisah, bisa disunting & disalin"
+            right={<Toggle checked={settings.artifacts} onChange={(v) => setSettings({ artifacts: v })} label="Canvas" />}
             onClick={() => setSettings({ artifacts: !settings.artifacts })}
           />
           <Row

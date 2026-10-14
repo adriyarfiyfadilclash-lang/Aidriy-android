@@ -3,6 +3,8 @@ const KEY = 'aidriy.settings.v1';
 export const DEFAULTS = {
   theme: 'system', // system | light | dark
   font: 'default', // default | system
+  accent: 'terracotta',
+  personalization: null, // salinan lokal; sumber utama di profiles.settings.personalization
   haptics: true,
   webSearch: true,
   imageSearch: true,

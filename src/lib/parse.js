@@ -37,6 +37,23 @@ export function cleanForDisplay(text) {
   return extractMemories(trimPartialTag(text || '')).clean;
 }
 
+// Jenis Canvas yang didukung: document (Markdown), code, html, svg.
+export function normalizeKind(type, language = '') {
+  const t = String(type || '').toLowerCase();
+  if (t === 'html' || t === 'svg') return t;
+  if (t === 'document' || t === 'markdown' || t === 'text' || t === 'doc') return 'document';
+  if (t === 'code') return language === 'html' ? 'html' : language === 'svg' ? 'svg' : 'code';
+  return language ? 'code' : 'document';
+}
+
+/** Ganti isi artefak lama di riwayat dengan penanda (isi terbaru dikirim lewat daftar Canvas aktif). */
+export function collapseArtifacts(raw) {
+  return String(raw || '').replace(/<artifact\b([^>]*)>[\s\S]*?(<\/artifact>|$)/gi, (_, a) => {
+    const title = attr(a, 'title') || 'Canvas';
+    return `[Canvas "${title}" — isi terbarunya ada di bagian Canvas aktif]`;
+  });
+}
+
 /** @returns {Array<{type:'text', text:string} | {type:'artifact', title, kind, language, content, complete:boolean, index:number}>} */
 export function splitSegments(raw) {
   const text = cleanForDisplay(raw);
@@ -48,15 +65,16 @@ export function splitSegments(raw) {
   while ((m = re.exec(text))) {
     if (m.index > last) segs.push({ type: 'text', text: text.slice(last, m.index) });
     const a = m[1];
-    let kind = (attr(a, 'type') || 'code').toLowerCase();
     const language = (attr(a, 'language') || '').toLowerCase();
-    if (kind === 'code' && (language === 'html' || language === 'svg')) kind = language;
-    if (!['html', 'svg', 'markdown', 'code'].includes(kind)) kind = 'code';
+    const kind = normalizeKind(attr(a, 'type'), language);
+    const action = (attr(a, 'action') || 'create').toLowerCase() === 'update' ? 'update' : 'create';
     segs.push({
       type: 'artifact',
-      title: attr(a, 'title') || 'Artefak',
+      action,
+      id: attr(a, 'id').trim() || null,
+      title: (attr(a, 'title') || 'Canvas').slice(0, 120),
       kind,
-      language: language || (kind === 'code' ? 'text' : kind),
+      language: kind === 'code' ? language || 'text' : kind,
       content: stripFences(m[2]),
       complete: m[3].toLowerCase() === '</artifact>',
       index: idx++,
@@ -100,7 +118,7 @@ const CITE = /\[(\d+)\]\(#cite-\d+\)/g;
 export function plainText(raw) {
   return splitSegments(raw)
     .filter((s) => s.type !== 'images')
-    .map((s) => (s.type === 'text' ? s.text.replace(CITE, '[$1]') : `[Artefak: ${s.title}]`))
+    .map((s) => (s.type === 'text' ? s.text.replace(CITE, '[$1]') : `[Canvas: ${s.title}]`))
     .join('\n')
     .trim();
 }

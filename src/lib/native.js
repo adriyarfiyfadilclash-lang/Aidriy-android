@@ -173,15 +173,48 @@ export async function shareFile(filename, content, mime = 'text/plain') {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
+/** Menyalin teks; mengembalikan true hanya bila salin benar-benar berhasil. */
+/** Bagikan / simpan berkas biner (Blob) lewat Sharesheet Android atau unduhan di browser. */
+export async function shareBlob(filename, blob) {
+  if (isNative) {
+    const base64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1]);
+      r.onerror = () => reject(new Error('Berkas tidak bisa dibaca'));
+      r.readAsDataURL(blob);
+    });
+    const res = await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Cache });
+    await Share.share({ title: filename, files: [res.uri], dialogTitle: 'Bagikan atau simpan' });
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
 export async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
   } catch {
+    /* coba cara lama */
+  }
+  try {
     const ta = document.createElement('textarea');
     ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    const ok = document.execCommand('copy');
     ta.remove();
+    return !!ok;
+  } catch {
+    return false;
   }
 }

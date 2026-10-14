@@ -66,8 +66,8 @@ async function readError(error) {
       const body = await res.json();
       const status = res.status;
       const code = body?.code || (status === 429 ? 'rate_limited' : 'failed');
-      let msg = body?.error || `Layanan gambar gagal (HTTP ${status})`;
-      if (Array.isArray(body?.details) && body.details.length) msg += ` — ${body.details.join('; ')}`;
+      let msg = body?.error || `layanan gagal (HTTP ${status})`;
+      if (Array.isArray(body?.details) && body.details.length) msg = body.details.map((d) => d.replace(/^\w+:\s*/, '')).join('; ');
       return new ImageSearchError(msg, code);
     } catch {
       return new ImageSearchError(`Layanan gambar gagal (HTTP ${res.status})`, 'failed');

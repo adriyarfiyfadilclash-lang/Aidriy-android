@@ -1897,6 +1897,11 @@ button.row:active {
   min-width: 0;
   max-width: 100%;
 }
+.msg-ai > .gallery,
+.msg-ai > .sources2 {
+  max-width: none;
+  width: calc(100% + 36px);
+}
 .gallery {
   display: flex;
   flex-direction: column;
@@ -2051,7 +2056,7 @@ button.row:active {
   position: fixed;
   inset: 0;
   z-index: 80;
-  background: rgba(10, 9, 8, 0.96);
+  background: #0e0d0c;
   color: #f5f1ea;
   display: flex;
   flex-direction: column;

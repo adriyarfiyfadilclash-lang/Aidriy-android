@@ -134,7 +134,7 @@ export default function ImageGallery({ block, onRetry }) {
 
       {status === 'error' && (
         <div className="gallery-note error">
-          <span>Pencarian gambar gagal: {block.error || 'layanan tidak merespons'}. Tidak ada gambar yang ditampilkan.</span>
+          <span>Gambar tidak bisa dicari: {block.error || 'layanan tidak merespons'}. Tidak ada gambar yang ditampilkan.</span>
           {onRetry && (
             <button type="button" className="link-btn" onClick={onRetry}>
               <RotateCcw size={14} /> Coba lagi

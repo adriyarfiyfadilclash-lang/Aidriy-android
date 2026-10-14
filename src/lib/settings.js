@@ -5,6 +5,7 @@ export const DEFAULTS = {
   font: 'default', // default | system
   haptics: true,
   webSearch: true,
+  imageSearch: true,
   artifacts: true,
   memory: true,
   effort: 'medium', // off | medium | high

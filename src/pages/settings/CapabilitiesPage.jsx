@@ -1,4 +1,4 @@
-import { Brain, Globe, Lightbulb, Shapes } from 'lucide-react';
+import { Brain, Globe, Images, Lightbulb, Shapes } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../../state';
 import { EFFORTS } from '../../lib/providers';
@@ -19,6 +19,13 @@ export default function CapabilitiesPage() {
             subtitle="Bawaan untuk chat baru. Bisa diubah per chat lewat tombol +"
             right={<Toggle checked={settings.webSearch} onChange={(v) => setSettings({ webSearch: v })} label="Pencarian web" />}
             onClick={() => setSettings({ webSearch: !settings.webSearch })}
+          />
+          <Row
+            icon={<Images size={24} strokeWidth={1.5} />}
+            title="Pencarian gambar"
+            subtitle="Tampilkan foto nyata dari internet beserta sumbernya"
+            right={<Toggle checked={settings.imageSearch !== false} onChange={(v) => setSettings({ imageSearch: v })} label="Pencarian gambar" />}
+            onClick={() => setSettings({ imageSearch: settings.imageSearch === false })}
           />
           <Row
             icon={<Shapes size={24} strokeWidth={1.5} />}

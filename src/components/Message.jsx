@@ -1,6 +1,8 @@
 import { memo, useMemo, useState } from 'react';
 import { AlertCircle, Brain, Check, ChevronDown, Code2, Copy, FileText, Globe, ImageIcon, RotateCcw, Square, Volume2 } from 'lucide-react';
-import Markdown from './Markdown';
+import Markdown, { SourcesContext } from './Markdown';
+import ImageGallery from './ImageGallery';
+import Sources from './Sources';
 import { splitSegments, plainText, speakableText } from '../lib/parse';
 import { copyText, speak, stopSpeaking, tap } from '../lib/native';
 import { formatSize } from '../lib/files';
@@ -41,7 +43,12 @@ function AttachmentChips({ items }) {
   );
 }
 
-function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, voice }) {
+function findBlock(blocks, query) {
+  const q = query.toLowerCase();
+  return (blocks || []).find((b) => b.query.toLowerCase() === q);
+}
+
+function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, onRetryImages, voice }) {
   const [copied, setCopied] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -57,10 +64,15 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, voice }) {
   }
 
   const sources = msg.meta?.sources || [];
+  const blocks = msg.meta?.images || [];
+  const tagged = new Set(segments.filter((s) => s.type === 'images').map((s) => s.query.toLowerCase()));
+  const untagged = blocks.filter((b) => !tagged.has(b.query.toLowerCase()));
   const thinking = msg.thinking ?? msg.meta?.thinking;
   const streaming = msg.streaming;
+  const retry = (b) => (onRetryImages && !streaming ? () => onRetryImages(msg.id, b.id) : undefined);
 
   return (
+    <SourcesContext.Provider value={sources}>
     <div className="msg msg-ai">
       {thinking && (
         <div className="thinking">
@@ -79,9 +91,18 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, voice }) {
         </div>
       )}
 
-      {segments.map((s, i) =>
-        s.type === 'text' ? <Markdown key={i} text={s.text} /> : <ArtifactCard key={i} seg={s} onOpen={onOpenArtifact} />
-      )}
+      {untagged.map((b) => (
+        <ImageGallery key={b.id} block={b} onRetry={retry(b)} />
+      ))}
+
+      {segments.map((s, i) => {
+        if (s.type === 'text') return <Markdown key={i} text={s.text} />;
+        if (s.type === 'images') {
+          const b = findBlock(blocks, s.query);
+          return b ? <ImageGallery key={i} block={b} onRetry={retry(b)} /> : null;
+        }
+        return <ArtifactCard key={i} seg={s} onOpen={onOpenArtifact} />;
+      })}
 
       {streaming && !msg.content && !thinking && !msg.status && (
         <div className="typing">
@@ -108,28 +129,7 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, voice }) {
         </div>
       )}
 
-      {sources.length > 0 && !streaming && (
-        <div className="sources">
-          <div className="sources-title">Sumber</div>
-          {sources.slice(0, 8).map((s, i) => {
-            let host = s.url;
-            try {
-              host = new URL(s.url).hostname.replace(/^www\./, '');
-            } catch {
-              /* biarkan */
-            }
-            return (
-              <a key={i} className="source" href={s.url} target="_blank" rel="noreferrer">
-                <span className="source-num">{i + 1}</span>
-                <span className="source-text">
-                  <span className="truncate">{s.title}</span>
-                  <span className="source-host truncate">{host}</span>
-                </span>
-              </a>
-            );
-          })}
-        </div>
-      )}
+      {sources.length > 0 && !streaming && <Sources sources={sources} />}
 
       {!streaming && msg.content && (
         <div className="msg-actions">
@@ -177,6 +177,7 @@ function Message({ msg, isLast, busy, onRegenerate, onOpenArtifact, voice }) {
         </div>
       )}
     </div>
+    </SourcesContext.Provider>
   );
 }
 

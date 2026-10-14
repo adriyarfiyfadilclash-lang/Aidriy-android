@@ -1,8 +1,29 @@
-import { memo, useState } from 'react';
+import { createContext, memo, useContext, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy } from 'lucide-react';
-import { copyText, tap } from '../lib/native';
+import { copyText, openExternal, tap } from '../lib/native';
+import { sourceDomain, sourceTitle } from '../lib/citations';
+
+// Daftar sumber pesan aktif, dipakai penanda sitasi [n].
+export const SourcesContext = createContext([]);
+
+function Cite({ n }) {
+  const sources = useContext(SourcesContext);
+  const s = sources[n - 1];
+  if (!s) return <sup className="cite missing">{n}</sup>;
+  return (
+    <button
+      type="button"
+      className="cite"
+      title={`${sourceTitle(s)} — ${sourceDomain(s)}`}
+      aria-label={`Sumber ${n}: ${sourceDomain(s)}`}
+      onClick={() => openExternal(s.url)}
+    >
+      {n}
+    </button>
+  );
+}
 
 function textOf(node) {
   if (node == null) return '';
@@ -47,10 +68,31 @@ const components = {
     return <CodeBlock language={language} code={code} />;
   },
   a({ href, children }) {
+    const m = /^#cite-(\d+)$/.exec(href || '');
+    if (m) return <Cite n={Number(m[1])} />;
     return (
-      <a href={href} target="_blank" rel="noreferrer">
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => {
+          if (/^https?:/i.test(href || '')) {
+            e.preventDefault();
+            openExternal(href);
+          }
+        }}
+      >
         {children}
       </a>
+    );
+  },
+  // URL gambar yang ditulis model tidak terverifikasi, jadi tidak ditampilkan sebagai gambar.
+  img({ src, alt }) {
+    if (!/^https?:/i.test(src || '')) return null;
+    return (
+      <button type="button" className="md-img-link" onClick={() => openExternal(src)}>
+        Tautan gambar dari AI{alt ? `: ${alt}` : ''} (belum diverifikasi)
+      </button>
     );
   },
   table({ children }) {

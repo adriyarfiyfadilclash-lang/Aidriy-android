@@ -14,7 +14,7 @@ function stripFences(s) {
 
 // Buang potongan tag yang belum lengkap di akhir teks saat streaming.
 function trimPartialTag(text) {
-  const tags = ['<artifact', '<memory', '</memory'];
+  const tags = ['<artifact', '<memory', '</memory', '<image_search'];
   const lt = text.lastIndexOf('<');
   if (lt === -1) return text;
   const tail = text.slice(lt);
@@ -65,12 +65,42 @@ export function splitSegments(raw) {
     if (m[3] === '') break;
   }
   if (last < text.length) segs.push({ type: 'text', text: text.slice(last) });
-  return segs.filter((s) => s.type === 'artifact' || s.text.trim());
+  return segs.flatMap(splitImageTags).filter((s) => s.type !== 'text' || s.text.trim());
 }
+
+// Tag <image_search query="..." /> menandai tempat galeri hasil pencarian gambar nyata.
+export const IMAGE_TAG = /<image_search\b([^>]*?)\/?>(?:\s*<\/image_search>)?/gi;
+
+function splitImageTags(seg) {
+  if (seg.type !== 'text' || !/<image_search/i.test(seg.text)) return [seg];
+  const out = [];
+  let last = 0;
+  for (const m of seg.text.matchAll(IMAGE_TAG)) {
+    if (m.index > last) out.push({ type: 'text', text: seg.text.slice(last, m.index) });
+    const query = attr(m[1], 'query').trim();
+    if (query) out.push({ type: 'images', query });
+    last = m.index + m[0].length;
+  }
+  if (last < seg.text.length) out.push({ type: 'text', text: seg.text.slice(last) });
+  return out;
+}
+
+/** Semua kata kunci gambar yang sudah lengkap ditulis model. */
+export function imageQueries(raw) {
+  const qs = [];
+  for (const m of (raw || '').matchAll(IMAGE_TAG)) {
+    const q = attr(m[1], 'query').trim();
+    if (q && !qs.some((x) => x.toLowerCase() === q.toLowerCase())) qs.push(q);
+  }
+  return qs;
+}
+
+const CITE = /\[(\d+)\]\(#cite-\d+\)/g;
 
 export function plainText(raw) {
   return splitSegments(raw)
-    .map((s) => (s.type === 'text' ? s.text : `[Artefak: ${s.title}]`))
+    .filter((s) => s.type !== 'images')
+    .map((s) => (s.type === 'text' ? s.text.replace(CITE, '[$1]') : `[Artefak: ${s.title}]`))
     .join('\n')
     .trim();
 }
@@ -78,6 +108,7 @@ export function plainText(raw) {
 // Untuk dibacakan: tanpa simbol Markdown dan tanpa isi artefak.
 export function speakableText(raw) {
   return plainText(raw)
+    .replace(/\[\d+\]/g, '')
     .replace(/```[\s\S]*?```/g, ' (blok kode) ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')

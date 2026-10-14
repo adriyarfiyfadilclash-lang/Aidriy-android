@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { CheckCircle2, ExternalLink, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { useApp } from '../../state';
 import { PROVIDERS, fetchModels } from '../../lib/providers';
-import { tap } from '../../lib/native';
+import { openExternal, tap } from '../../lib/native';
 import { TopBar } from '../../components/ui';
 
 function KeyCard({ id }) {
@@ -69,9 +69,9 @@ function KeyCard({ id }) {
         </button>
       </div>
       <div className="key-actions">
-        <a className="link-btn" href={p.keyUrl} target="_blank" rel="noreferrer">
+        <button type="button" className="link-btn" onClick={() => openExternal(p.keyUrl)}>
           Dapatkan key <ExternalLink size={14} />
-        </a>
+        </button>
         <div className="spacer" />
         {saved && (
           <button type="button" className="icon-btn" onClick={remove} aria-label="Hapus key">

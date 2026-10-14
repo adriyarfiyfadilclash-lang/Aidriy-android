@@ -68,6 +68,9 @@ export async function listMessages(conversationId) {
 export async function insertMessage(row) {
   return check(await supabase.from('messages').insert(row).select().single());
 }
+export async function updateMessageMeta(id, meta) {
+  check(await supabase.from('messages').update({ meta }).eq('id', id));
+}
 export async function deleteMessage(id) {
   check(await supabase.from('messages').delete().eq('id', id));
 }

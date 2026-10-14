@@ -43,6 +43,18 @@ export function buildSystemPrompt({ profile, memories, project, settings, incogn
     );
   }
 
+  if (settings.imageSearch !== false) {
+    parts.push(
+      [
+        '',
+        '## Gambar nyata dari internet',
+        'Aplikasi bisa mencari dan menampilkan foto nyata beserta sumbernya. Bila pengguna meminta gambar/foto, atau gambar jelas membantu (tempat, hewan, tumbuhan, makanan, produk, bangunan, tokoh, benda), tulis tag ini di posisi galeri harus muncul:',
+        '<image_search query="kata kunci spesifik" />',
+        'Aturan: maksimal 2 tag per jawaban; kata kunci singkat dan spesifik, sebaiknya dalam bahasa Inggris untuk hasil terbaik (misal "Borobudur temple aerial"). Kamu TIDAK melihat hasilnya, jadi jangan mendeskripsikan isi gambar tertentu, jangan menulis URL gambar, jangan memakai sintaks gambar Markdown ![](), dan jangan mengganti gambar dengan emoji. Cukup beri pengantar singkat lalu tag; aplikasi yang menampilkan hasil dan sumbernya, atau memberi tahu pengguna bila tidak ada hasil.',
+      ].join('\n')
+    );
+  }
+
   if (settings.artifacts) {
     parts.push(
       [

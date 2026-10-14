@@ -7,8 +7,24 @@ import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { StatusBar, Style } from '@capacitor/status-bar';
+import { Browser } from '@capacitor/browser';
 
 export const isNative = Capacitor.isNativePlatform();
+
+// ---------- Membuka tautan luar ----------
+// Di Android, tautan target="_blank" di WebView tidak selalu terbuka, jadi pakai Custom Tabs.
+export async function openExternal(url) {
+  if (!url || !/^https?:\/\//i.test(url)) return;
+  if (isNative) {
+    try {
+      await Browser.open({ url });
+      return;
+    } catch {
+      /* jatuh ke cara biasa */
+    }
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
 
 // ---------- Getaran ----------
 let hapticsOn = true;

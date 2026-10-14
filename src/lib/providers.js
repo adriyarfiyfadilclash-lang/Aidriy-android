@@ -254,11 +254,19 @@ async function streamAnthropic(o, cb) {
   });
   await ensureOk(res);
   const usage = { input: 0, output: 0 };
+  let blockCites = [];
   for await (const ev of sseEvents(res)) {
+    if (ev.type === 'content_block_stop') {
+      // Sitasi Anthropic melekat pada blok teks: penanda diletakkan tepat setelah blok itu.
+      if (blockCites.length) cb.onCiteAppend(blockCites);
+      blockCites = [];
+      continue;
+    }
     if (ev.type === 'message_start') {
       const u = ev.message?.usage || {};
       usage.input = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
     } else if (ev.type === 'content_block_start') {
+      blockCites = [];
       const b = ev.content_block;
       if (b?.type === 'web_search_tool_result' && Array.isArray(b.content)) {
         for (const r of b.content) if (r.url) cb.onSource({ url: r.url, title: r.title || r.url });
@@ -269,6 +277,9 @@ async function streamAnthropic(o, cb) {
       const d = ev.delta;
       if (d?.type === 'text_delta') cb.onText(d.text);
       else if (d?.type === 'thinking_delta') cb.onThinking(d.thinking);
+      else if (d?.type === 'citations_delta' && d.citation?.url) {
+        blockCites.push({ url: d.citation.url, title: d.citation.title || d.citation.url });
+      }
     } else if (ev.type === 'message_delta') {
       if (ev.usage?.output_tokens) usage.output = ev.usage.output_tokens;
     } else if (ev.type === 'error') {
@@ -320,6 +331,8 @@ async function streamGemini(o, cb) {
   await ensureOk(res);
   const usage = { input: 0, output: 0 };
   const seen = new Set();
+  let chunks = [];
+  let supports = [];
   for await (const ev of sseEvents(res)) {
     if (ev.error) throw new ProviderError(ev.error.message || 'Terjadi kesalahan dari Gemini');
     const cand = ev.candidates?.[0];
@@ -328,7 +341,10 @@ async function streamGemini(o, cb) {
       if (p.thought) cb.onThinking(p.text);
       else cb.onText(p.text);
     }
-    for (const g of cand?.groundingMetadata?.groundingChunks || []) {
+    const gm = cand?.groundingMetadata;
+    if (gm?.groundingChunks?.length) chunks = gm.groundingChunks;
+    if (gm?.groundingSupports?.length) supports = gm.groundingSupports;
+    for (const g of gm?.groundingChunks || []) {
       const w = g.web;
       if (w?.uri && !seen.has(w.uri)) {
         seen.add(w.uri);
@@ -339,6 +355,15 @@ async function streamGemini(o, cb) {
       usage.input = ev.usageMetadata.promptTokenCount || usage.input;
       usage.output =
         (ev.usageMetadata.candidatesTokenCount || 0) + (ev.usageMetadata.thoughtsTokenCount || 0) || usage.output;
+    }
+  }
+  // groundingSupports: potongan teks jawaban + sumber yang mendukungnya.
+  for (const s of supports) {
+    const snippet = s.segment?.text;
+    if (!snippet) continue;
+    for (const i of s.groundingChunkIndices || []) {
+      const w = chunks[i]?.web;
+      if (w?.uri) cb.onCiteSnippet({ url: w.uri, title: w.title || w.uri, snippet });
     }
   }
   return { usage };
@@ -383,11 +408,17 @@ async function streamOpenAI(o, cb) {
   });
   await ensureOk(res);
   const usage = { input: 0, output: 0 };
+  let local = '';
+  const starts = new Map(); // item_id:content_index -> posisi awal di teks
   for await (const ev of sseEvents(res)) {
     switch (ev.type) {
-      case 'response.output_text.delta':
+      case 'response.output_text.delta': {
+        const k = `${ev.item_id}:${ev.content_index ?? 0}`;
+        if (!starts.has(k)) starts.set(k, local.length);
+        local += ev.delta || '';
         cb.onText(ev.delta || '');
         break;
+      }
       case 'response.reasoning_summary_text.delta':
         cb.onThinking(ev.delta || '');
         break;
@@ -400,7 +431,14 @@ async function streamOpenAI(o, cb) {
         break;
       case 'response.output_text.annotation.added': {
         const a = ev.annotation;
-        if (a?.type === 'url_citation' && a.url) cb.onSource({ url: a.url, title: a.title || a.url });
+        if (a?.type === 'url_citation' && a.url) {
+          cb.onSource({ url: a.url, title: a.title || a.url });
+          const base = starts.get(`${ev.item_id}:${ev.content_index ?? 0}`);
+          if (base != null && Number.isInteger(a.start_index) && Number.isInteger(a.end_index) && a.end_index > a.start_index) {
+            const snippet = local.slice(base + a.start_index, base + a.end_index);
+            if (snippet.trim()) cb.onCiteSnippet({ url: a.url, title: a.title || a.url, snippet });
+          }
+        }
         break;
       }
       case 'response.completed': {
@@ -506,6 +544,8 @@ export async function streamChat(opts, callbacks) {
     onSource: () => {},
     onStatus: () => {},
     onNotice: () => {},
+    onCiteAppend: () => {},
+    onCiteSnippet: () => {},
     ...callbacks,
   };
   const base = { ...opts, history: mergeTurns(opts.history) };

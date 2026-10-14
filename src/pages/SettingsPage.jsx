@@ -54,7 +54,7 @@ export default function SettingsPage() {
   const [dialog, setDialog] = useState(null);
 
   const keyCount = Object.values(settings.keys).filter(Boolean).length;
-  const capCount = [settings.webSearch, settings.artifacts, settings.memory, settings.effort !== 'off'].filter(Boolean).length;
+  const capCount = [settings.webSearch, settings.imageSearch !== false, settings.artifacts, settings.memory, settings.effort !== 'off'].filter(Boolean).length;
 
   return (
     <div className="page settings-page">

@@ -5,7 +5,10 @@ import { useApp } from '../state';
 import * as db from '../lib/db';
 import { PROVIDERS, effortLabel, shortModelName, streamChat } from '../lib/providers';
 import { buildSystemPrompt } from '../lib/prompt';
-import { extractMemories, plainText, splitSegments } from '../lib/parse';
+import { extractMemories, imageQueries, plainText, splitSegments } from '../lib/parse';
+import { addSource, applySnippetCitations, marker } from '../lib/citations';
+import { searchImages } from '../lib/search/imageSearch';
+import { imageQueryFromText } from '../lib/search/intent';
 import { attachmentMeta, fileToAttachment, imageFromBase64 } from '../lib/files';
 import { shareText, takePhoto, tap } from '../lib/native';
 import { ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet, TopBar } from '../components/ui';
@@ -186,16 +189,50 @@ export default function ChatPage() {
     let thinking = '';
     let status = '';
     const sources = [];
+    const snippetCites = [];
+    const imageBlocks = [];
+    const imageJobs = [];
     let notice = '';
     let raf = 0;
+    let finished = false;
+    const imagesOn = settings.imageSearch !== false;
+    const snapshotImages = () => imageBlocks.map((b) => ({ ...b }));
     const flush = () => {
       raf = 0;
       setMessages((prev) =>
-        prev.map((m) => (m.id === tempId ? { ...m, content: text, thinking, status, meta: { ...m.meta, sources: [...sources] }, notice } : m))
+        prev.map((m) =>
+          m.id === tempId ? { ...m, content: text, thinking, status, meta: { ...m.meta, sources: [...sources], images: snapshotImages() }, notice } : m
+        )
       );
     };
     const schedule = () => {
-      if (!raf) raf = requestAnimationFrame(flush);
+      if (!raf && !finished) raf = requestAnimationFrame(flush);
+    };
+
+    // Pencarian gambar nyata lewat backend; hasil (atau error) disimpan apa adanya.
+    const startImageSearch = (query, auto = false) => {
+      if (!imagesOn || imageBlocks.length >= 3) return;
+      if (imageBlocks.some((b) => b.query.toLowerCase() === query.toLowerCase())) return;
+      const block = { id: `img-${Date.now()}-${imageBlocks.length}`, query, status: 'loading', results: [], auto };
+      imageBlocks.push(block);
+      schedule();
+      imageJobs.push(
+        searchImages(query)
+          .then((r) => {
+            block.status = 'done';
+            block.results = r.results;
+            block.provider = r.provider;
+            if (r.message) block.message = r.message;
+          })
+          .catch((e) => {
+            block.status = 'error';
+            block.error = e.message;
+          })
+          .finally(() => {
+            schedule();
+            setMessages((prev) => prev.map((m) => (m.id === tempId || m.tempId === tempId ? { ...m, meta: { ...m.meta, images: snapshotImages() } } : m)));
+          })
+      );
     };
 
     let memories = [];
@@ -227,6 +264,7 @@ export default function ChatPage() {
           onText: (t) => {
             text += t;
             status = '';
+            if (imagesOn && t.includes('>')) imageQueries(text).forEach((q) => startImageSearch(q));
             schedule();
           },
           onThinking: (t) => {
@@ -234,8 +272,17 @@ export default function ChatPage() {
             schedule();
           },
           onSource: (s) => {
-            if (!sources.some((x) => x.url === s.url)) sources.push(s);
+            addSource(sources, s);
             schedule();
+          },
+          onCiteAppend: (list) => {
+            const nums = list.map((c) => addSource(sources, c)).filter(Boolean);
+            if (nums.length) text += marker(nums);
+            schedule();
+          },
+          onCiteSnippet: (c) => {
+            const n = addSource(sources, c);
+            if (n) snippetCites.push({ snippet: c.snippet, n });
           },
           onStatus: (s) => {
             status = s;
@@ -259,8 +306,19 @@ export default function ChatPage() {
       abortRef.current = null;
     }
 
+    finished = true;
+    if (raf) cancelAnimationFrame(raf);
+    text = applySnippetCitations(text, snippetCites);
     const { clean, memories: newMems } = extractMemories(text);
-    const meta = {
+
+    // Cadangan: pengguna jelas meminta gambar tetapi model tidak menulis tag pencarian.
+    if (imagesOn && !imageBlocks.length && !controller.signal.aborted) {
+      const lastUser = [...historyList].reverse().find((m) => m.role === 'user');
+      const q = imageQueryFromText(lastUser?.content || '');
+      if (q) startImageSearch(q, true);
+    }
+
+    const baseMeta = {
       provider,
       model: shortModelName(provider, model, settings.modelCache),
       sources,
@@ -269,11 +327,18 @@ export default function ChatPage() {
     };
     setMessages((prev) =>
       prev.map((m) =>
-        m.id === tempId ? { ...m, content: clean, thinking: undefined, status: '', streaming: false, meta, error, notice } : m
+        m.id === tempId
+          ? { ...m, tempId, content: clean, thinking: undefined, status: '', streaming: false, meta: { ...baseMeta, images: snapshotImages() }, error, notice }
+          : m
       )
     );
 
-    if (!incognito && convId && clean.trim()) {
+    // Tunggu semua pencarian gambar selesai sebelum disimpan (layanan punya batas waktu sendiri).
+    await Promise.allSettled(imageJobs);
+    const meta = { ...baseMeta, images: imageBlocks.length ? snapshotImages() : undefined };
+    setMessages((prev) => prev.map((m) => (m.id === tempId || m.tempId === tempId ? { ...m, meta } : m)));
+
+    if (!incognito && convId && (clean.trim() || imageBlocks.length)) {
       try {
         await beforeSave;
         const saved = await db.insertMessage({ conversation_id: convId, role: 'assistant', content: clean, meta });
@@ -411,6 +476,34 @@ export default function ChatPage() {
     }
   };
 
+  // Ulangi pencarian gambar yang gagal pada pesan tertentu.
+  const retryImages = useCallback(
+    async (messageId, blockId) => {
+      const patchBlock = (patch) => {
+        const msg = messagesRef.current.find((m) => m.id === messageId);
+        if (!msg?.meta?.images) return null;
+        const meta = { ...msg.meta, images: msg.meta.images.map((b) => (b.id === blockId ? { ...b, ...patch } : b)) };
+        messagesRef.current = messagesRef.current.map((m) => (m.id === messageId ? { ...m, meta } : m));
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, meta } : m)));
+        return meta;
+      };
+      const block = messagesRef.current.find((m) => m.id === messageId)?.meta?.images?.find((b) => b.id === blockId);
+      if (!block) return;
+      patchBlock({ status: 'loading', error: undefined });
+      let meta;
+      try {
+        const r = await searchImages(block.query);
+        meta = patchBlock({ status: 'done', results: r.results, provider: r.provider, message: r.message });
+      } catch (e) {
+        meta = patchBlock({ status: 'error', error: e.message });
+      }
+      if (meta && !incognito && !String(messageId).startsWith('ai-')) {
+        db.updateMessageMeta(messageId, meta).catch(() => {});
+      }
+    },
+    [incognito]
+  );
+
   const stop = () => {
     tap();
     abortRef.current?.abort();
@@ -544,6 +637,7 @@ export default function ChatPage() {
                 busy={busy}
                 onRegenerate={m.role === 'assistant' ? regenerate : undefined}
                 onOpenArtifact={(seg) => setViewer(seg)}
+                onRetryImages={retryImages}
                 voice={settings.voice}
               />
             ))}

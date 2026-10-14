@@ -3174,7 +3174,7 @@ button.p-row:active,
   background: linear-gradient(to bottom, transparent, var(--surface));
   pointer-events: none;
 }
-.cb-long {
+.cb-long-body {
   display: flex;
   flex-direction: column;
   gap: 6px;

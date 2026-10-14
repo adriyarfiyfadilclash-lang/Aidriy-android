@@ -160,7 +160,7 @@ function CanvasBlock({ seg, info, row, isLatest, streaming, onOpen, onApply, onD
       )}
 
       {size === 'long' ? (
-        <button type="button" className="cb-long" onClick={() => onOpen(seg, info, 'preview')}>
+        <button type="button" className="cb-long-body" onClick={() => onOpen(seg, info, 'preview')}>
           <span className="cb-long-text">{content.slice(0, 280).replace(/[#*`>|]/g, '')}…</span>
           <span className="muted small">{content.length.toLocaleString('id-ID')} karakter · ketuk untuk membaca</span>
         </button>

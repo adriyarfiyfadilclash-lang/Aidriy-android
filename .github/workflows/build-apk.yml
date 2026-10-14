@@ -35,12 +35,15 @@ jobs:
       - name: Build web
         run: npm run build
 
-      - name: Simpan hasil web (untuk pengecekan)
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-dist
-          path: dist
-          retention-days: 7
+      - name: Simpan hasil web ke cabang web-preview (untuk pengecekan)
+        run: |
+          cp -r dist /tmp/preview
+          cd /tmp/preview
+          git init -q
+          git checkout -q -b web-preview
+          git add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "Pratinjau web build ${{ github.run_number }}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" web-preview
 
       - name: Siapkan proyek Android
         run: |

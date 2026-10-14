@@ -232,7 +232,7 @@ export default function AuthPage() {
         {error && (
           <div className="auth-error" role="alert">
             {error}
-            {mode === 'login' && /salah/.test(error) && (
+            {mode === 'login' && (
               <button type="button" className="link-btn" onClick={() => go('reset')}>
                 Lupa kata sandi? Atur ulang
               </button>

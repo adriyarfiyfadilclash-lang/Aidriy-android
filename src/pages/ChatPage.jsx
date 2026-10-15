@@ -492,6 +492,7 @@ export default function ChatPage() {
     abortRef.current = controller;
     let usage = null;
     let error = '';
+    let errorInfo = null;
     try {
       const out = await streamChat(
         {
@@ -544,6 +545,7 @@ export default function ChatPage() {
         error = /Failed to fetch|NetworkError|Load failed/i.test(e.message)
           ? 'Tidak bisa terhubung ke penyedia AI. Periksa koneksi internet.'
           : e.message || 'Terjadi kesalahan';
+        if (e.kind && e.kind !== 'other') errorInfo = { kind: e.kind, detail: e.detail || '', provider };
       }
     } finally {
       if (raf) cancelAnimationFrame(raf);
@@ -581,7 +583,7 @@ export default function ChatPage() {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === tempId
-          ? { ...m, tempId, content: clean, thinking: undefined, status: '', streaming: false, meta: { ...baseMeta, images: snapshotImages() }, error, notice }
+          ? { ...m, tempId, content: clean, thinking: undefined, status: '', streaming: false, meta: { ...baseMeta, images: snapshotImages() }, error, errorInfo, notice }
           : m
       )
     );
@@ -801,6 +803,11 @@ export default function ChatPage() {
     [incognito, showToast]
   );
 
+  const openModelPicker = useCallback(() => {
+    tap();
+    setSheet('model');
+  }, []);
+
   const shareMessage = useCallback((msg) => shareOrCopy('Jawaban A.I.DRIY', plainText(msg.content || ''), showToast), [showToast]);
 
   // Ulangi pencarian gambar yang gagal pada pesan tertentu.
@@ -1018,6 +1025,7 @@ export default function ChatPage() {
                   onRetryImages={retryImages}
                   onFeedback={m.role === 'assistant' ? setFeedback : undefined}
                   onShare={m.role === 'assistant' ? shareMessage : undefined}
+                  onPickModel={openModelPicker}
                   canvasRows={rowsForRender}
                   latestCanvas={latestCanvas}
                   voice={settings.voice}

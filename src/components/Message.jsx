@@ -20,11 +20,12 @@ import {
 } from 'lucide-react';
 import CanvasBlock from './CanvasBlock';
 import { useApp } from '../state';
+import { PROVIDERS } from '../lib/providers';
 import Markdown, { SourcesContext } from './Markdown';
 import ImageGallery from './ImageGallery';
 import Sources from './Sources';
 import { splitSegments, plainText, speakableText } from '../lib/parse';
-import { copyText, speak, stopSpeaking, tap } from '../lib/native';
+import { copyText, openExternal, speak, stopSpeaking, tap } from '../lib/native';
 import { formatSize } from '../lib/files';
 
 function AttachmentChips({ items }) {
@@ -67,6 +68,7 @@ function Message({
   onRetryImages,
   onFeedback,
   onShare,
+  onPickModel,
   canvasRows,
   latestCanvas,
   voice,
@@ -158,13 +160,36 @@ function Message({
       {msg.error && (
         <div className="error-box">
           <AlertCircle size={18} />
-          <div>
-            <div>{msg.error}</div>
-            {isLast && onRegenerate && (
-              <button type="button" className="link-btn" onClick={onRegenerate}>
-                Coba lagi
-              </button>
+          <div className="error-body">
+            {msg.errorInfo?.kind === 'credits' ? (
+              <>
+                <div className="error-title">Kredit {PROVIDERS[msg.errorInfo.provider]?.short || 'API'} habis</div>
+                <div>
+                  Saldo atau kuota API key {PROVIDERS[msg.errorInfo.provider]?.short || ''} kamu sudah habis, jadi penyedia menolak permintaan ini. Kredit API ditagih
+                  terpisah dari langganan aplikasi chat. Isi ulang kredit, atau ganti ke model dari penyedia lain yang key-nya masih aktif.
+                </div>
+              </>
+            ) : (
+              <div>{msg.error}</div>
             )}
+            {msg.errorInfo?.detail && <div className="error-detail">{msg.errorInfo.detail}</div>}
+            <div className="error-actions">
+              {msg.errorInfo?.kind === 'credits' && PROVIDERS[msg.errorInfo.provider]?.billingUrl && (
+                <button type="button" className="btn btn-dark small-btn" onClick={() => openExternal(PROVIDERS[msg.errorInfo.provider].billingUrl)}>
+                  Isi kredit
+                </button>
+              )}
+              {(msg.errorInfo?.kind === 'credits' || msg.errorInfo?.kind === 'auth') && onPickModel && (
+                <button type="button" className="btn btn-ghost small-btn" onClick={onPickModel}>
+                  Ganti model
+                </button>
+              )}
+              {isLast && onRegenerate && (
+                <button type="button" className="link-btn" onClick={onRegenerate}>
+                  Coba lagi
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

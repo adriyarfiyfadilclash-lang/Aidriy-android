@@ -6,6 +6,7 @@ export const PROVIDERS = {
     name: 'Anthropic (Claude)',
     short: 'Anthropic',
     keyUrl: 'https://console.anthropic.com/settings/keys',
+    billingUrl: 'https://console.anthropic.com/settings/billing',
     keyHint: 'sk-ant-…',
     models: [
       { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
@@ -17,6 +18,7 @@ export const PROVIDERS = {
     name: 'Google Gemini',
     short: 'Gemini',
     keyUrl: 'https://aistudio.google.com/apikey',
+    billingUrl: 'https://aistudio.google.com/apikey',
     keyHint: 'AIza…',
     models: [
       { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
@@ -28,6 +30,7 @@ export const PROVIDERS = {
     name: 'OpenAI (GPT)',
     short: 'OpenAI',
     keyUrl: 'https://platform.openai.com/api-keys',
+    billingUrl: 'https://platform.openai.com/settings/organization/billing/overview',
     keyHint: 'sk-…',
     models: [
       { id: 'gpt-5', label: 'GPT-5' },
@@ -39,6 +42,7 @@ export const PROVIDERS = {
     name: 'OpenRouter',
     short: 'OpenRouter',
     keyUrl: 'https://openrouter.ai/keys',
+    billingUrl: 'https://openrouter.ai/settings/credits',
     keyHint: 'sk-or-…',
     models: [
       { id: 'openrouter/auto', label: 'Otomatis (OpenRouter)' },
@@ -132,10 +136,31 @@ function anthropicHeaders(key) {
 }
 
 export class ProviderError extends Error {
-  constructor(message, status) {
+  constructor(message, status, kind = 'other', detail = '') {
     super(message);
     this.status = status;
+    this.kind = kind; // credits | auth | rate | other
+    this.detail = detail;
   }
+}
+
+const CREDIT_RE = /no credits|insufficient[_ ]quota|exceeded your current quota|credit balance is too low|insufficient credits|requires more credits|billing|payment required|quota exceeded for metric.*(free|billing)|add credits/i;
+
+/** Menggolongkan error penyedia supaya aplikasi bisa memberi penjelasan & langkah yang tepat. */
+export function classifyProviderError(status, raw) {
+  const t = String(raw || '');
+  if (status === 402 || CREDIT_RE.test(t)) return 'credits';
+  if (status === 401 || status === 403 || /invalid.*api.?key|incorrect api key|api key not valid|unauthorized/i.test(t)) return 'auth';
+  if (status === 429 || /rate.?limit|resource_exhausted|too many requests/i.test(t)) return 'rate';
+  return 'other';
+}
+
+function streamError(raw, fallback) {
+  const text = raw || fallback;
+  const kind = classifyProviderError(0, text);
+  if (kind === 'credits') return new ProviderError('Kredit atau kuota API key ini sudah habis.', 0, kind, text);
+  if (kind === 'rate') return new ProviderError('Terlalu banyak permintaan dalam waktu singkat (batas pemakaian). Tunggu sebentar lalu coba lagi.', 0, kind, text);
+  return new ProviderError(text);
 }
 
 async function ensureOk(res) {
@@ -153,9 +178,12 @@ async function ensureOk(res) {
   } catch {
     /* abaikan */
   }
-  if (res.status === 401 || res.status === 403) msg = `API key ditolak (${res.status}). ${msg}`;
-  if (res.status === 429) msg = `Batas pemakaian tercapai (429). ${msg}`;
-  throw new ProviderError(msg, res.status);
+  const kind = classifyProviderError(res.status, msg);
+  const detail = msg;
+  if (kind === 'credits') msg = 'Kredit atau kuota API key ini sudah habis.';
+  else if (kind === 'auth') msg = `API key ditolak (${res.status}). Periksa kembali key-nya.`;
+  else if (kind === 'rate') msg = 'Terlalu banyak permintaan dalam waktu singkat (batas pemakaian). Tunggu sebentar lalu coba lagi.';
+  throw new ProviderError(msg, res.status, kind, kind === 'other' ? '' : detail);
 }
 
 async function* sseEvents(res) {
@@ -283,7 +311,7 @@ async function streamAnthropic(o, cb) {
     } else if (ev.type === 'message_delta') {
       if (ev.usage?.output_tokens) usage.output = ev.usage.output_tokens;
     } else if (ev.type === 'error') {
-      throw new ProviderError(ev.error?.message || 'Terjadi kesalahan dari Anthropic');
+      throw streamError(ev.error?.message, 'Terjadi kesalahan dari Anthropic');
     }
   }
   return { usage };
@@ -334,7 +362,7 @@ async function streamGemini(o, cb) {
   let chunks = [];
   let supports = [];
   for await (const ev of sseEvents(res)) {
-    if (ev.error) throw new ProviderError(ev.error.message || 'Terjadi kesalahan dari Gemini');
+    if (ev.error) throw streamError(ev.error.message, 'Terjadi kesalahan dari Gemini');
     const cand = ev.candidates?.[0];
     for (const p of cand?.content?.parts || []) {
       if (typeof p.text !== 'string') continue;
@@ -450,9 +478,9 @@ async function streamOpenAI(o, cb) {
         break;
       }
       case 'response.failed':
-        throw new ProviderError(ev.response?.error?.message || 'Permintaan ke OpenAI gagal');
+        throw streamError(ev.response?.error?.message, 'Permintaan ke OpenAI gagal');
       case 'error':
-        throw new ProviderError(ev.message || ev.error?.message || 'Terjadi kesalahan dari OpenAI');
+        throw streamError(ev.message || ev.error?.message, 'Terjadi kesalahan dari OpenAI');
       default:
         break;
     }
@@ -505,7 +533,7 @@ async function streamOpenRouter(o, cb) {
   const usage = { input: 0, output: 0 };
   const seen = new Set();
   for await (const ev of sseEvents(res)) {
-    if (ev.error) throw new ProviderError(ev.error.message || 'Terjadi kesalahan dari OpenRouter');
+    if (ev.error) throw streamError(ev.error.message, 'Terjadi kesalahan dari OpenRouter');
     const d = ev.choices?.[0]?.delta;
     if (d?.reasoning) cb.onThinking(d.reasoning);
     if (d?.content) cb.onText(d.content);

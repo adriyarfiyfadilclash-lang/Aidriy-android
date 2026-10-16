@@ -104,10 +104,15 @@ export default function useStickToBottom({ threshold = 160, enabled = true } = {
     requestAnimationFrame(jump);
   }, [jump]);
 
+  /** Dipanggil setelah isi berubah (useLayoutEffect) supaya tetap di bawah sebelum layar digambar. */
+  const follow = useCallback(() => {
+    if (stickRef.current) jump();
+  }, [jump]);
+
   /** Berhenti mengikuti (mis. saat melompat ke hasil pencarian). */
   const unstick = useCallback(() => {
     stickRef.current = false;
   }, []);
 
-  return { setScroll, setContent, setSentinel, scrollRef, stickRef, showButton, scrollToBottom, stick, unstick };
+  return { setScroll, setContent, setSentinel, scrollRef, contentRef, stickRef, showButton, scrollToBottom, stick, unstick, follow };
 }

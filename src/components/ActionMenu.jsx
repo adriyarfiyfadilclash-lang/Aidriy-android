@@ -38,9 +38,9 @@ export default function ActionMenu({ open, anchor, items, onClose, label = 'Menu
     if (!open || !mounted || !anchor || !ref.current) return undefined;
     const place = () => {
       const r = anchor.getBoundingClientRect();
-      const w = Math.min(width, window.innerWidth - 24);
+      const w = Math.min(width, window.innerWidth - 16);
       const h = ref.current.offsetHeight;
-      const left = Math.max(12, Math.min(r.right - w, window.innerWidth - w - 12));
+      const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
       let top = r.bottom + 6;
       const maxH = window.innerHeight - top - 12;
       if (h > maxH && r.top - h - 6 > 12) top = r.top - h - 6;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowDown, ArrowLeft, Bookmark, BookmarkCheck, ChevronDown, ChevronUp, FolderClosed, Ghost, MoreVertical, Paperclip, Pencil, Search, Share2, SquarePen, Trash2, X } from 'lucide-react';
 import { useApp } from '../state';
@@ -224,6 +224,12 @@ export default function ChatPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app.conversations]);
+
+  // Isi pesan berubah (streaming, versi, gambar) → tetap di bawah bila sedang mengikuti.
+  useLayoutEffect(() => {
+    scroller.follow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   // Ganti chat → tutup pencarian & menu
   useEffect(() => {

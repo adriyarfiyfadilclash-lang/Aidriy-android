@@ -13,7 +13,7 @@ export const DEFAULTS = {
   effort: 'medium', // off | medium | high
   provider: 'anthropic',
   model: 'claude-sonnet-5-5',
-  keys: { anthropic: '', gemini: '', openai: '', openrouter: '' },
+  keys: { anthropic: '', gemini: '', openai: '', openrouter: '', nvidia: '' },
   voice: { lang: 'id-ID', rate: 1, autoListen: true },
   modelCache: {},
 };

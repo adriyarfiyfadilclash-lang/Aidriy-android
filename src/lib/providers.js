@@ -1,5 +1,7 @@
 // Penghubung ke penyedia AI. Semua permintaan langsung dari HP ke penyedia
-// memakai API key milik pengguna sendiri.
+// memakai API key milik pengguna sendiri. Khusus NVIDIA, permintaan lewat relay
+// Supabase (nvidia-proxy) karena NVIDIA tidak mengizinkan panggilan langsung dari aplikasi.
+import { supabase, SUPABASE_URL, SUPABASE_KEY as SUPABASE_KEY_PUBLIC } from './supabase';
 
 export const PROVIDERS = {
   anthropic: {
@@ -49,6 +51,22 @@ export const PROVIDERS = {
       { id: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
       { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
       { id: 'openai/gpt-5-mini', label: 'GPT-5 mini' },
+    ],
+  },
+  nvidia: {
+    name: 'NVIDIA (NIM)',
+    short: 'NVIDIA',
+    keyUrl: 'https://build.nvidia.com/settings/api-keys',
+    billingUrl: 'https://build.nvidia.com/settings/api-keys',
+    keyHint: 'nvapi-…',
+    viaRelay: true,
+    models: [
+      { id: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B' },
+      { id: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash' },
+      { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
+      { id: 'nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning 30B' },
+      { id: 'nvidia/nemotron-3.5-super-vl-120b-a12b', label: 'Nemotron 3.5 Super VL (gambar)' },
+      { id: 'stepfun-ai/step-5-preview', label: 'Step 5 Preview' },
     ],
   },
 };
@@ -121,6 +139,20 @@ export async function fetchModels(provider, key) {
     return [{ id: 'openrouter/auto', label: 'Otomatis (OpenRouter)' }].concat(
       (j.data || []).map((m) => ({ id: m.id, label: m.name || m.id }))
     );
+  }
+  if (provider === 'nvidia') {
+    const res = await nvidiaFetch(key, 'models');
+    await ensureOk(res);
+    const j = await res.json();
+    const known = new Map(PROVIDERS.nvidia.models.map((m) => [m.id, m.label]));
+    const ids = (j.data || [])
+      .map((m) => m.id)
+      .filter((id) => !NVIDIA_NON_CHAT.test(id));
+    // Model yang sudah teruji di atas, sisanya urut abjad.
+    return [...known.keys()]
+      .filter((id) => ids.includes(id))
+      .concat(ids.filter((id) => !known.has(id)).sort())
+      .map((id) => ({ id, label: known.get(id) || id }));
   }
   return [];
 }
@@ -552,11 +584,124 @@ async function streamOpenRouter(o, cb) {
   return { usage };
 }
 
+// ---------- NVIDIA NIM (format OpenAI, lewat relay) ----------
+const NVIDIA_NON_CHAT =
+  /embed|rerank|retriever|reward|guard|safety|content-safety|topic-control|parse|clip|deplot|kosmos|fuyu|detector|calibration|translate|starcoder|codegemma|recurrentgemma|diffusion|cosmos|neva|vila|nvclip|gemma-2b|-v0\.1$|llama2-|codellama/i;
+const NVIDIA_VISION = /vision|-vl|vl-|omni|phi-3-vision|gemma-3|gemma-4/i;
+
+async function nvidiaFetch(key, path, body, signal) {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new ProviderError('Masuk ke akun A.I.DRIY dulu untuk memakai NVIDIA.', 401, 'auth');
+  try {
+    return await fetch(`${SUPABASE_URL}/functions/v1/nvidia-proxy`, {
+      method: body ? 'POST' : 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: SUPABASE_KEY_PUBLIC,
+        'x-provider-key': key,
+        'x-nvidia-path': path,
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new ProviderError('Tidak bisa terhubung ke relay NVIDIA. Periksa koneksi internet.');
+  }
+}
+
+function nvidiaMessages(system, history, vision) {
+  const msgs = [];
+  if (system) msgs.push({ role: 'system', content: system });
+  for (const m of history) {
+    if (m.role === 'assistant') {
+      msgs.push({ role: 'assistant', content: m.text || '…' });
+      continue;
+    }
+    const texts = [];
+    const images = [];
+    for (const a of m.attachments || []) {
+      if (a.kind === 'text' && a.text) texts.push(textFile(a));
+      else if (a.kind === 'image' && a.data && vision) images.push({ type: 'image_url', image_url: { url: dataUrl(a) } });
+      else if (a.kind === 'image' && a.data) texts.push(`[Gambar "${a.name}" dilampirkan, tetapi model ini tidak bisa melihat gambar. Pilih model NVIDIA bertanda (gambar).]`);
+      else if (a.kind === 'pdf') texts.push(`[PDF "${a.name}" tidak bisa dibaca model NVIDIA. Salin teksnya ke chat bila perlu.]`);
+      else texts.push(fileNote(a));
+    }
+    const text = [...texts, m.text].filter(Boolean).join('\n\n') || '…';
+    msgs.push({ role: 'user', content: images.length ? [...images, { type: 'text', text }] : text });
+  }
+  return msgs;
+}
+
+async function streamNvidia(o, cb) {
+  const vision = NVIDIA_VISION.test(o.model);
+  const body = {
+    model: o.model,
+    messages: nvidiaMessages(o.system, o.history, vision),
+    stream: true,
+    stream_options: { include_usage: true },
+    max_tokens: 8192,
+  };
+  if (o.webSearch) cb.onNotice('Pencarian web belum tersedia untuk model NVIDIA, jadi dijawab dari pengetahuan model.');
+  const res = await nvidiaFetch(o.apiKey, 'chat/completions', body, o.signal);
+  await ensureOk(res);
+  const usage = { input: 0, output: 0 };
+  // Sebagian model menulis proses berpikir di dalam <think>…</think> pada teks jawaban.
+  let inThink = false;
+  let pending = '';
+  const emit = (chunk) => {
+    pending += chunk;
+    for (;;) {
+      if (inThink) {
+        const end = pending.indexOf('</think>');
+        if (end < 0) {
+          if (pending.length > 8) {
+            cb.onThinking(pending.slice(0, -8));
+            pending = pending.slice(-8);
+          }
+          return;
+        }
+        cb.onThinking(pending.slice(0, end));
+        pending = pending.slice(end + 8).replace(/^\s+/, '');
+        inThink = false;
+      } else {
+        const start = pending.indexOf('<think>');
+        if (start < 0) {
+          const keep = pending.lastIndexOf('<');
+          const safe = keep >= 0 && pending.length - keep < 7 ? keep : pending.length;
+          if (safe) cb.onText(pending.slice(0, safe));
+          pending = pending.slice(safe);
+          return;
+        }
+        if (start) cb.onText(pending.slice(0, start));
+        pending = pending.slice(start + 7);
+        inThink = true;
+      }
+    }
+  };
+  for await (const ev of sseEvents(res)) {
+    if (ev.error) throw streamError(ev.error.message || ev.error, 'Terjadi kesalahan dari NVIDIA');
+    const d = ev.choices?.[0]?.delta;
+    const thought = d?.reasoning_content || d?.reasoning;
+    if (thought) cb.onThinking(thought);
+    if (d?.content) emit(d.content);
+    if (ev.usage) {
+      usage.input = ev.usage.prompt_tokens || 0;
+      usage.output = ev.usage.completion_tokens || 0;
+    }
+  }
+  if (pending) (inThink ? cb.onThinking : cb.onText)(pending);
+  return { usage };
+}
+
 const STREAMERS = {
   anthropic: streamAnthropic,
   gemini: streamGemini,
   openai: streamOpenAI,
   openrouter: streamOpenRouter,
+  nvidia: streamNvidia,
 };
 
 /**

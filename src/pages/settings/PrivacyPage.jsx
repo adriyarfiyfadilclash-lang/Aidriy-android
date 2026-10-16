@@ -73,7 +73,7 @@ export default function PrivacyPage() {
         title="Hapus semua API key?"
         message="Kamu perlu memasukkan key lagi untuk memakai AI."
         onConfirm={() => {
-          setSettings((s) => ({ ...s, keys: { anthropic: '', gemini: '', openai: '', openrouter: '' } }));
+          setSettings((s) => ({ ...s, keys: { anthropic: '', gemini: '', openai: '', openrouter: '', nvidia: '' } }));
           showToast('API key dihapus');
         }}
       />

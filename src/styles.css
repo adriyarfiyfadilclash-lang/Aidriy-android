@@ -3568,3 +3568,7 @@ button.p-row:active,
 .error-actions .btn-ghost {
   color: var(--text);
 }
+.key-note {
+  margin: 0 0 10px;
+  line-height: 1.45;
+}

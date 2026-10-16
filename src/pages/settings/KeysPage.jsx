@@ -8,7 +8,7 @@ import { TopBar } from '../../components/ui';
 function KeyCard({ id }) {
   const { settings, setSettings, showToast } = useApp();
   const p = PROVIDERS[id];
-  const saved = settings.keys[id];
+  const saved = settings.keys[id] || '';
   const [value, setValue] = useState(saved);
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,6 +53,12 @@ function KeyCard({ id }) {
           </span>
         )}
       </div>
+      {p.viaRelay && (
+        <p className="muted small key-note">
+          NVIDIA tidak menerima panggilan langsung dari aplikasi, jadi permintaannya lewat relay di server Supabase milik A.I.DRIY. Key diteruskan ke NVIDIA setiap kali
+          dipakai dan tidak disimpan di server. Perlu login.
+        </p>
+      )}
       <div className="input-with-btn">
         <input
           className="input mono"
@@ -92,7 +98,7 @@ export default function KeysPage() {
       <TopBar back title={<span className="serif-title">Kunci API</span>} />
       <main className="page-scroll">
         <p className="muted intro">
-          A.I.DRIY memakai API key milikmu. Key hanya disimpan di HP ini dan dikirim langsung ke penyedia AI, tidak ke server lain. Biaya pemakaian mengikuti tarif masing-masing penyedia.
+          A.I.DRIY memakai API key milikmu. Key hanya disimpan di HP ini dan dikirim langsung ke penyedia AI (kecuali NVIDIA, lewat relay — lihat kartunya). Biaya pemakaian mengikuti tarif masing-masing penyedia.
         </p>
         {Object.keys(PROVIDERS).map((id) => (
           <KeyCard key={id} id={id} />

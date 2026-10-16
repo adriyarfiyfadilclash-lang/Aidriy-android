@@ -14,6 +14,8 @@ import { searchImages } from '../lib/search/imageSearch';
 import { imageQueryFromText } from '../lib/search/intent';
 import { attachmentMeta, fileToAttachment, imageFromBase64 } from '../lib/files';
 import { takePhoto, tap } from '../lib/native';
+import { indexCanvasLater, indexMessageLater, retrieveContext, semanticReady } from '../lib/semantic';
+import { pdfToText } from '../lib/docText';
 import { ChoiceDialog, ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet, TopBar } from '../components/ui';
 import { LogoMark } from '../components/Logo';
 import Composer from '../components/Composer';
@@ -102,6 +104,10 @@ export default function ChatPage() {
   const [incognito, setIncognito] = useState(false);
   const [webSearch, setWebSearch] = useState(settings.webSearch);
   const [tool, setTool] = useState(null); // { type: 'image'|'ocr'|'translate', target? }
+  const [fromLibrary, setFromLibrary] = useState(false); // "Jawab dari Pustaka"
+  const fromLibraryRef = useRef(false);
+  fromLibraryRef.current = fromLibrary;
+  const pdfTextCache = useRef(new Map());
   const toolRef = useRef(tool);
   toolRef.current = tool;
   const [newProjectId, setNewProjectId] = useState(searchParams.get('project'));
@@ -312,6 +318,7 @@ export default function ChatPage() {
             const row = await canvasDb.saveCanvas(target.id, target.revision, seg.content, { title: seg.title, source: 'ai' });
             infos[seg.index] = { id: row.id, status: 'updated', revision: row.revision };
             setCanvasRefresh((n) => n + 1);
+            indexCanvasLater(settings, row);
           } catch (e) {
             if (e instanceof canvasDb.CanvasConflictError) infos[seg.index] = { id: target.id, status: 'conflict', revision: target.revision };
             else throw e;
@@ -327,6 +334,7 @@ export default function ChatPage() {
           });
           infos[seg.index] = { id: row.id, status: 'created', revision: row.revision };
           active.push({ ...row, kind: canvasDb.kindOf(row) });
+          indexCanvasLater(settings, row);
         }
       } catch (e) {
         infos[seg.index] = { status: 'error', error: e.message };
@@ -427,6 +435,7 @@ export default function ChatPage() {
     let thinking = '';
     let status = '';
     const sources = [];
+    const meta0 = {};
     const snippetCites = [];
     const imageBlocks = [];
     const imageJobs = [];
@@ -491,12 +500,80 @@ export default function ChatPage() {
         /* lanjut tanpa daftar Canvas */
       }
     }
-    const system = buildSystemPrompt({ profile, memories, project, settings, incognito, canvases });
+    let system = buildSystemPrompt({ profile, memories, project, settings, incognito, canvases });
     const lastUserMsg = [...historyList].reverse().find((m) => m.role === 'user');
-    const quick = settings.personalization?.quickAnswers !== false && isQuickQuestion(lastUserMsg?.content, lastUserMsg?.attachments?.length);
-    const effort = quick ? 'off' : settings.effort;
+
     const controller = new AbortController();
     abortRef.current = controller;
+
+    // "Jawab dari Pustaka": ambil potongan dokumen paling relevan (embedding + rerank NVIDIA).
+    if (opts.fromLibrary && semanticReady(settings) && lastUserMsg?.content) {
+      status = 'Mencari di Pustaka…';
+      schedule();
+      try {
+        const ctx = await retrieveContext(settings.keys.nvidia, lastUserMsg.content, { signal: controller.signal });
+        if (ctx.length) {
+          const docNo = new Map();
+          for (const c of ctx) {
+            const k = `${c.sourceType}:${c.sourceId}`;
+            if (!docNo.has(k)) {
+              const n = addSource(sources, {
+                url: `https://pustaka.aidriy.app/${c.sourceType}/${c.sourceId}`,
+                title: c.title,
+                internal: { type: c.sourceType, id: c.sourceId },
+              });
+              docNo.set(k, n);
+            }
+          }
+          const blocks = ctx.map((c) => `<kutipan sumber="${docNo.get(`${c.sourceType}:${c.sourceId}`)}" judul="${c.title.replace(/"/g, "'")}">\n${c.content}\n</kutipan>`);
+          system += [
+            '',
+            '',
+            '## Jawab dari Pustaka pengguna',
+            'Pengguna meminta jawaban berdasarkan dokumen di Pustaka-nya. Gunakan kutipan di bawah sebagai sumber utama. Setelah kalimat yang memakai isi kutipan, tulis penanda sumber [n](#cite-n) dengan n = nomor sumber kutipan. Jangan mengarang isi yang tidak ada di kutipan. Bila jawabannya tidak ada di kutipan, katakan terus terang bahwa itu tidak ditemukan di Pustaka, lalu boleh memberi jawaban umum dengan menyebut bahwa itu bukan dari Pustaka.',
+            ...blocks,
+          ].join('\n');
+          meta0.library = ctx.length;
+        } else {
+          notice = 'Tidak ada dokumen Pustaka yang relevan. Unggah dokumen atau indeks Pustaka di Pengaturan → Kemampuan.';
+        }
+      } catch (e) {
+        notice = `Pencarian Pustaka gagal: ${e.message}`;
+      }
+      status = '';
+      schedule();
+    }
+
+    // Model NVIDIA belum bisa membaca PDF langsung: ubah jadi teks dulu (pdf.js + Nemotron Parse untuk halaman scan).
+    if (provider === 'nvidia') {
+      for (const m of historyList) {
+        for (const meta of m.attachments || []) {
+          const full = cacheRef.current.get(meta.id);
+          if (!full || full.kind !== 'pdf' || !full.data) continue;
+          if (!pdfTextCache.current.has(meta.id)) {
+            try {
+              const r = await pdfToText(full.data, {
+                key: settings.keys.nvidia,
+                signal: controller.signal,
+                onProgress: (p) => {
+                  status = p.mode === 'parse' ? `NVIDIA Parse membaca ${full.name} (hal. ${p.page}/${p.pages})…` : `Membaca ${full.name} (hal. ${p.page}/${p.pages})…`;
+                  schedule();
+                },
+              });
+              pdfTextCache.current.set(meta.id, r.text || '');
+            } catch {
+              pdfTextCache.current.set(meta.id, '');
+            }
+          }
+          const t = pdfTextCache.current.get(meta.id);
+          if (t) cacheRef.current.set(meta.id, { ...full, kind: 'text', text: t, name: `${full.name} (teks)`, pdfConverted: true });
+        }
+      }
+      status = '';
+      schedule();
+    }
+    const quick = settings.personalization?.quickAnswers !== false && isQuickQuestion(lastUserMsg?.content, lastUserMsg?.attachments?.length);
+    const effort = quick ? 'off' : settings.effort;
     let usage = null;
     let error = '';
     let errorInfo = null;
@@ -581,6 +658,7 @@ export default function ChatPage() {
     }
 
     const baseMeta = {
+      ...meta0,
       provider,
       model: shortModelName(provider, model, settings.modelCache),
       sources,
@@ -615,6 +693,7 @@ export default function ChatPage() {
         if (realParent && !String(realParent).startsWith('u-')) row.parent_id = realParent;
         const saved = await db.insertMessage(row);
         setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: saved.id, parent_id: saved.parent_id || m.parent_id, created_at: saved.created_at } : m)));
+        indexMessageLater(settings, saved, convRef.current?.title);
         const infos = await processCanvases(clean, convId, saved.id, canvases, false);
         if (infos.length) {
           const withCanvas = { ...meta, canvases: infos };
@@ -820,6 +899,7 @@ export default function ChatPage() {
               m.id === userMsg.id ? { ...m, id: saved.id, attachments: metas } : m.parent_id === userMsg.id ? { ...m, parent_id: saved.id } : m
             )
           );
+          indexMessageLater(settings, saved, convRef.current?.title || makeTitle(text, atts));
           return saved.id;
         })().catch((e) => {
           showToast(`Gagal menyimpan pesan: ${e.message}`, 'error');
@@ -829,7 +909,7 @@ export default function ChatPage() {
 
       try {
         if (activeTool) return await runTool(convId, activeTool, userMsg, atts, saveUser, { parentId: userMsg.id });
-        return await runAssistant(convId, history, saveUser, { parentId: userMsg.id });
+        return await runAssistant(convId, history, saveUser, { parentId: userMsg.id, fromLibrary: fromLibraryRef.current });
       } finally {
         busyRef.current = false;
         setBusy(false);
@@ -873,7 +953,7 @@ export default function ChatPage() {
     busyRef.current = true;
     setBusy(true);
     try {
-      const ropts = { parentId: userM.id, version, regen: !!lastA, prevSelId: lastA?.id };
+      const ropts = { parentId: userM.id, version, regen: !!lastA, prevSelId: lastA?.id, fromLibrary: fromLibraryRef.current || !!lastA?.meta?.library };
       if (toolSpec) {
         const fullAtts = (userM.attachments || []).map((a) => cacheRef.current.get(a.id)).filter(Boolean);
         await runTool(convRef.current?.id, toolSpec, userM, fullAtts, Promise.resolve(null), ropts);

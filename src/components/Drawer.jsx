@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Sparkles,
   Star,
   Trash2,
   X,
@@ -22,6 +23,7 @@ import * as db from '../lib/db';
 import { tap } from '../lib/native';
 import { ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet } from './ui';
 import ProjectPicker from './ProjectPicker';
+import { searchChatsByMeaning, semanticReady } from '../lib/semantic';
 
 const LONG_PRESS_MS = 500;
 const MOVE_TOLERANCE = 10;
@@ -108,12 +110,14 @@ function initials(name, email) {
 }
 
 export default function Drawer() {
-  const { drawerOpen, setDrawerOpen, conversations, refreshConversations, profile, user, showToast } = useApp();
+  const { drawerOpen, setDrawerOpen, conversations, refreshConversations, profile, user, showToast, settings } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [searching, setSearching] = useState(false);
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null);
+  const [meaning, setMeaning] = useState(null); // null | 'loading' | [] | error string
+  const meaningOn = semanticReady(settings);
   const timer = useRef();
   const [menuFor, setMenuFor] = useState(null); // percakapan yang menunya terbuka
   const [dialog, setDialog] = useState(null); // rename | project | delete | bulk-project | bulk-delete
@@ -137,6 +141,30 @@ export default function Drawer() {
       setDialog(null);
     }
   }, [drawerOpen, refreshConversations]);
+
+  // Pencarian berdasarkan makna (NVIDIA), sedikit lebih lambat dari pencarian kata.
+  useEffect(() => {
+    const term = q.trim();
+    if (!meaningOn || term.length < 3) {
+      setMeaning(null);
+      return undefined;
+    }
+    const ctl = new AbortController();
+    setMeaning('loading');
+    const t = setTimeout(async () => {
+      try {
+        const r = await searchChatsByMeaning(settings.keys.nvidia, term, conversations, { signal: ctl.signal });
+        if (!ctl.signal.aborted) setMeaning(r);
+      } catch (e) {
+        if (e.name !== 'AbortError') setMeaning(e.message || 'Pencarian makna gagal');
+      }
+    }, 650);
+    return () => {
+      clearTimeout(t);
+      ctl.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, meaningOn]);
 
   useEffect(() => {
     clearTimeout(timer.current);
@@ -255,8 +283,11 @@ export default function Drawer() {
         <div className="drawer-scroll">
           {searching && !selecting ? (
             <div className="drawer-list">
-              {results === null && <p className="muted pad">Ketik untuk mencari judul atau isi chat.</p>}
-              {results?.length === 0 && <p className="muted pad">Tidak ada chat yang cocok.</p>}
+              {results === null && (
+                <p className="muted pad">{meaningOn ? 'Ketik untuk mencari judul, isi, atau maksud chat.' : 'Ketik untuk mencari judul atau isi chat.'}</p>
+              )}
+              {results?.length === 0 && !(Array.isArray(meaning) && meaning.length) && meaning !== 'loading' && <p className="muted pad">Tidak ada chat yang cocok.</p>}
+              {meaningOn && results !== null && results.length > 0 && <div className="drawer-subsection">Cocok kata</div>}
               {results?.map((r) => (
                 <button key={r.id} type="button" className="drawer-item chat" onClick={() => go(`/c/${r.id}`)}>
                   <MessageCircle size={20} strokeWidth={1.5} />
@@ -266,6 +297,28 @@ export default function Drawer() {
                   </span>
                 </button>
               ))}
+              {meaningOn && meaning !== null && (
+                <>
+                  <div className="drawer-subsection">
+                    <Sparkles size={14} /> Mirip maknanya
+                    {meaning === 'loading' && <span className="spinner small" />}
+                  </div>
+                  {typeof meaning === 'string' && meaning !== 'loading' && <p className="muted pad small">{meaning}</p>}
+                  {Array.isArray(meaning) && meaning.length === 0 && <p className="muted pad small">Belum ada yang mirip. Indeks chat lama lewat Pengaturan → Kemampuan.</p>}
+                  {Array.isArray(meaning) &&
+                    meaning
+                      .filter((r) => !(results || []).some((x) => x.id === r.id))
+                      .map((r) => (
+                        <button key={`m-${r.id}`} type="button" className="drawer-item chat" onClick={() => go(`/c/${r.id}`)}>
+                          <Sparkles size={20} strokeWidth={1.5} />
+                          <span className="drawer-item-text">
+                            <span className="truncate">{r.title}</span>
+                            <span className="drawer-snippet truncate">{r.snippet}</span>
+                          </span>
+                        </button>
+                      ))}
+                </>
+              )}
             </div>
           ) : (
             <>

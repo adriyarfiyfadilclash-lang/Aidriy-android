@@ -125,7 +125,7 @@ export async function importFile(uid, file) {
 /** Gabungan berkas & Canvas dalam satu bentuk untuk tampilan. */
 export async function loadLibrary() {
   const [files, canvases] = await Promise.all([
-    supabase.from('library_items').select('id,title,item_type,mime_type,extension,storage_path,size_bytes,thumb,is_favorite,source_conversation_id,created_at,updated_at').order('created_at', { ascending: false }).limit(1000),
+    supabase.from('library_items').select('id,title,item_type,mime_type,extension,storage_path,size_bytes,thumb,is_favorite,source_conversation_id,index_status,created_at,updated_at').order('created_at', { ascending: false }).limit(1000),
     canvasDb.listCanvases(),
   ]);
   const items = [

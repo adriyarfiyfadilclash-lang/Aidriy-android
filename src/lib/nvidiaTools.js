@@ -206,3 +206,26 @@ export async function listVoices(key, engine = 'magpie') {
   const data = await call('nvidia-tools', key, { action: 'voices', engine });
   return data?.voices || [];
 }
+
+// ---------- Embedding, rerank, parse ----------
+/** Vektor makna (2048 dimensi) untuk tiap teks. inputType: 'passage' (isi) atau 'query' (pertanyaan). */
+export async function embedTexts(key, texts, inputType = 'passage', { signal } = {}) {
+  const out = [];
+  for (let i = 0; i < texts.length; i += 16) {
+    const data = await call('nvidia-tools', key, { action: 'embed', texts: texts.slice(i, i + 16), inputType }, { signal });
+    out.push(...(data?.vectors || []));
+  }
+  return out;
+}
+
+/** Urutkan ulang potongan teks berdasarkan relevansi dengan pertanyaan. */
+export async function rerank(key, query, passages, { signal } = {}) {
+  const data = await call('nvidia-tools', key, { action: 'rerank', query, passages }, { signal });
+  return data?.rankings || [];
+}
+
+/** Baca satu halaman dokumen (gambar) jadi Markdown dengan Nemotron Parse. */
+export async function parsePage(key, { mime, data, signal }) {
+  const res = await call('nvidia-tools', key, { action: 'parse', mime, image: data }, { signal });
+  return (res?.text || '').trim();
+}

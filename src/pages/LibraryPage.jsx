@@ -14,7 +14,9 @@ import {
   Pencil,
   Plus,
   Search,
+  ScanText,
   Share2,
+  Sparkles,
   Star,
   Trash2,
   Upload,
@@ -27,6 +29,10 @@ import * as canvasDb from '../lib/canvas';
 import { formatSize } from '../lib/files';
 import { openExternal, shareBlob, shareFile, tap } from '../lib/native';
 import { ChoiceDialog, ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet, TopBar, timeAgo } from '../components/ui';
+import { indexLibraryItem, searchLibraryByMeaning, semanticReady } from '../lib/semantic';
+import { isPdf, isTextLike } from '../lib/docText';
+
+const INDEX_LABEL = { indexed: 'Isi terindeks', empty: 'Tidak ada teks terbaca', unsupported: '' };
 
 function ItemIcon({ it }) {
   if (it.source === 'file' && it.item_type === 'image' && it.thumb) return <img className="lib-thumb" src={it.thumb} alt="" loading="lazy" />;
@@ -41,8 +47,9 @@ function ItemIcon({ it }) {
   );
 }
 
-function subtitle(it) {
+function subtitle(it, indexing) {
   const parts = [];
+  if (indexing) return indexing;
   if (it.source === 'canvas') {
     parts.push(`Canvas · ${canvasDb.KIND_LABEL[it.kind] || 'Dokumen'}`);
     parts.push(`Rev ${it.revision}`);
@@ -51,6 +58,7 @@ function subtitle(it) {
     if (it.size_bytes) parts.push(formatSize(it.size_bytes));
   }
   parts.push(timeAgo(it.updated_at || it.created_at));
+  if (it.source === 'file' && INDEX_LABEL[it.index_status]) parts.push(INDEX_LABEL[it.index_status]);
   return parts.join(' · ');
 }
 
@@ -104,7 +112,10 @@ function FileViewer({ item, onClose }) {
 export default function LibraryPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const { uid, showToast } = useApp();
+  const { uid, showToast, settings } = useApp();
+  const meaningOn = semanticReady(settings);
+  const [indexing, setIndexing] = useState({}); // id -> teks status
+  const [meaning, setMeaning] = useState(null); // null | 'loading' | [] | pesan error
   const [items, setItems] = useState(null);
   const [offline, setOffline] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -145,6 +156,57 @@ export default function LibraryPage() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // Pencarian berdasarkan makna di isi berkas & Canvas
+  useEffect(() => {
+    const term = debounced.trim();
+    if (!meaningOn || term.length < 3) {
+      setMeaning(null);
+      return undefined;
+    }
+    const ctl = new AbortController();
+    setMeaning('loading');
+    const t = setTimeout(async () => {
+      try {
+        const r = await searchLibraryByMeaning(settings.keys.nvidia, term, { signal: ctl.signal });
+        if (!ctl.signal.aborted) setMeaning(r);
+      } catch (e) {
+        if (e.name !== 'AbortError') setMeaning(e.message || 'Pencarian makna gagal');
+      }
+    }, 400);
+    return () => {
+      clearTimeout(t);
+      ctl.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced, meaningOn]);
+
+  // Baca isi berkas (PDF lewat Nemotron Parse bila perlu) lalu indeks untuk pencarian & jawaban.
+  const indexItem = useCallback(
+    async (it, data) => {
+      if (!meaningOn) return;
+      const setStatus = (txt) => setIndexing((m) => ({ ...m, [it.id]: txt }));
+      setStatus('Membaca isi…');
+      try {
+        const r = await indexLibraryItem(settings.keys.nvidia, it, {
+          data,
+          onProgress: (p) => setStatus(p.mode === 'parse' ? `NVIDIA Parse membaca halaman ${p.page}/${p.pages}…` : `Membaca halaman ${p.page}/${p.pages}…`),
+        });
+        setItems((prev) => prev?.map((x) => (x.id === it.id ? { ...x, index_status: r.status } : x)));
+        return r;
+      } catch (e) {
+        showToast(`"${it.title}" gagal diindeks: ${e.message}`, 'error');
+        return null;
+      } finally {
+        setIndexing((m) => {
+          const n = { ...m };
+          delete n[it.id];
+          return n;
+        });
+      }
+    },
+    [meaningOn, settings.keys.nvidia, showToast]
+  );
+
   const visible = useMemo(() => (items ? lib.filterSort(items, { filter, query: debounced, sort }) : []), [items, filter, debounced, sort]);
   const counts = useMemo(() => {
     const c = { all: 0, document: 0, image: 0, file: 0, canvas: 0, favorite: 0 };
@@ -166,12 +228,16 @@ export default function LibraryPage() {
     let added = 0;
     let dup = 0;
     setUpload({ done: 0, total: files.length, current: files[0].name, errors });
+    const toIndex = [];
     for (let i = 0; i < files.length; i++) {
       setUpload({ done: i, total: files.length, current: files[i].name, errors: [...errors] });
       try {
-        const { duplicate } = await lib.importFile(uid, files[i]);
+        const { duplicate, item } = await lib.importFile(uid, files[i]);
         if (duplicate) dup += 1;
-        else added += 1;
+        else {
+          added += 1;
+          if (meaningOn && item && (isPdf(item.title, item.mime_type) || isTextLike(item.title, item.mime_type))) toIndex.push({ item, file: files[i] });
+        }
       } catch (err) {
         errors.push(err.message || `${files[i].name} gagal diimpor`);
       }
@@ -181,6 +247,16 @@ export default function LibraryPage() {
     const msg = [added && `${added} berkas ditambahkan`, dup && `${dup} sudah ada (tidak diduplikasi)`, errors.length && `${errors.length} gagal`].filter(Boolean).join(' · ');
     showToast(msg || 'Tidak ada berkas yang diimpor', errors.length ? 'error' : 'info');
     if (!errors.length) setTimeout(() => setUpload(null), 1500);
+    // Indeks isi di latar belakang, satu per satu.
+    for (const { item, file } of toIndex) {
+      const data = await new Promise((resolve) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1] || '');
+        r.onerror = () => resolve('');
+        r.readAsDataURL(file);
+      });
+      await indexItem({ ...item, source: 'file' }, data || undefined);
+    }
   };
 
   // ---------- Aksi ----------
@@ -250,11 +326,15 @@ export default function LibraryPage() {
       />
       <input ref={inputRef} type="file" multiple hidden onChange={onFiles} />
       <main className="page-scroll lib-scroll">
-        <p className="muted intro">Berkas dan Canvas milikmu. Isinya tidak dikirim ke AI kecuali kamu memilih "Lampirkan ke chat".</p>
+        <p className="muted intro">
+          {meaningOn
+            ? 'Berkas dan Canvas milikmu. Isi dokumen dibaca dan diindeks lewat NVIDIA supaya bisa dicari dari maknanya dan dipakai saat kamu memilih "Jawab dari Pustaka" di chat.'
+            : 'Berkas dan Canvas milikmu. Isinya tidak dikirim ke AI kecuali kamu memilih "Lampirkan ke chat".'}
+        </p>
 
         <label className="lib-search">
           <Search size={18} />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cari nama berkas atau judul Canvas" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={meaningOn ? 'Cari nama atau isi dokumen…' : 'Cari nama berkas atau judul Canvas'} />
           {query && (
             <button type="button" onClick={() => setQuery('')} aria-label="Hapus pencarian">
               <X size={16} />
@@ -335,7 +415,38 @@ export default function LibraryPage() {
           </div>
         )}
 
-        {items && !loadError && visible.length === 0 && (
+        {meaningOn && meaning !== null && (
+          <section className="meaning-results" aria-label="Hasil berdasarkan makna">
+            <div className="meaning-head">
+              <span className="meaning-label">
+                <Sparkles size={14} /> Mirip maknanya
+              </span>
+              {meaning === 'loading' && <span className="spinner small" />}
+            </div>
+            {typeof meaning === 'string' && meaning !== 'loading' && <p className="muted small">{meaning}</p>}
+            {Array.isArray(meaning) && meaning.length === 0 && <p className="muted small">Belum ada isi dokumen yang mirip. Unggah dokumen atau indeks lewat Pengaturan → Kemampuan.</p>}
+            {Array.isArray(meaning) &&
+              meaning.map((r) => {
+                const it = items?.find((x) => x.id === r.id);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    className="meaning-card"
+                    onClick={() => (r.sourceType === 'canvas' ? navigate(`/canvas/${r.id}`) : it ? openItem(it) : showToast('Berkas sudah tidak ada', 'error'))}
+                  >
+                    {it ? <ItemIcon it={it} /> : <span className="lib-icon t-document"><FileText size={22} strokeWidth={1.6} /></span>}
+                    <span className="meaning-card-text">
+                      <span className="meaning-card-title truncate">{it?.title || r.title}</span>
+                      <span className="meaning-card-snippet">{r.snippet}</span>
+                    </span>
+                  </button>
+                );
+              })}
+          </section>
+        )}
+
+        {items && !loadError && visible.length === 0 && !(Array.isArray(meaning) && meaning.length) && (
           <div className="empty">
             <div className="empty-icon">
               <FolderOpen size={40} strokeWidth={1.4} />
@@ -361,7 +472,7 @@ export default function LibraryPage() {
                       {it.is_favorite && <Star size={13} className="lib-fav" fill="currentColor" />}
                       {it.title}
                     </span>
-                    <span className="lib-row-sub truncate">{subtitle(it)}</span>
+                    <span className={`lib-row-sub truncate ${indexing[it.id] ? 'indexing' : ''}`}>{subtitle(it, indexing[it.id])}</span>
                   </span>
                 </button>
                 <IconButton label={`Aksi untuk ${it.title}`} onClick={() => setActive(it)}>
@@ -392,6 +503,19 @@ export default function LibraryPage() {
                 onClick={() => {
                   setActive(null);
                   navigate(`/c/${active.conversation_id}`);
+                }}
+              />
+            )}
+            {meaningOn && active.source === 'file' && (isPdf(active.title, active.mime_type) || isTextLike(active.title, active.mime_type)) && (
+              <Row
+                icon={<ScanText size={22} strokeWidth={1.6} />}
+                title={active.index_status === 'indexed' ? 'Baca ulang isi' : 'Baca & indeks isi'}
+                subtitle="Supaya bisa dicari dan dipakai untuk menjawab"
+                onClick={async () => {
+                  const it = active;
+                  setActive(null);
+                  const r = await indexItem({ ...it, extracted_text: null }, undefined);
+                  if (r) showToast(r.status === 'indexed' ? `"${it.title}" siap dipakai (${r.chunks} bagian)` : 'Tidak ada teks yang bisa dibaca dari berkas ini');
                 }}
               />
             )}

@@ -21,7 +21,7 @@ function userId(req: Request): string | null {
   }
 }
 const RATE = new Map<string, number[]>();
-function limited(uid: string, n = 30) {
+function limited(uid: string, n = 120) {
   const now = Date.now();
   const l = (RATE.get(uid) || []).filter((t) => now - t < 60_000);
   l.push(now);
@@ -348,6 +348,86 @@ async function doOcr(key: string, body: any) {
   throw lastErr || new Error('OCR gagal');
 }
 
+// ---------- Embedding, rerank, parse (pencarian makna & dokumen) ----------
+const EMBED_MODEL = 'nvidia/nemotron-3-embed-1b';
+const RERANK_URL = 'https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-vl-1b-v2/reranking';
+const RERANK_MODEL = 'nvidia/llama-nemotron-rerank-vl-1b-v2';
+
+async function doEmbed(key: string, body: any) {
+  const texts: string[] = (Array.isArray(body.texts) ? body.texts : []).map((t: unknown) => String(t || '').slice(0, 8000)).filter(Boolean);
+  if (!texts.length) return fail(400, 'Teks kosong.');
+  if (texts.length > 32) return fail(400, 'Maksimal 32 teks per permintaan.');
+  const inputType = body.inputType === 'query' ? 'query' : 'passage';
+  const r = await nvHttp('https://integrate.api.nvidia.com/v1/embeddings', key, { model: EMBED_MODEL, input: texts, input_type: inputType, encoding_format: 'float', truncate: 'END' }, 60_000);
+  const vectors = (r?.data || [])
+    .sort((a: any, b: any) => a.index - b.index)
+    .map((d: any) => (d.embedding as number[]).map((x) => Math.round(x * 1e5) / 1e5));
+  if (vectors.length !== texts.length) return fail(502, 'Jumlah vektor dari NVIDIA tidak sesuai.');
+  return json(200, { vectors, model: EMBED_MODEL, dims: vectors[0]?.length || 0 });
+}
+
+async function doRerank(key: string, body: any) {
+  const query = String(body.query || '').slice(0, 2000);
+  const passages: string[] = (Array.isArray(body.passages) ? body.passages : []).map((t: unknown) => String(t || '').slice(0, 4000));
+  if (!query || !passages.length) return fail(400, 'Pertanyaan atau potongan teks kosong.');
+  const r = await nvHttp(RERANK_URL, key, { model: RERANK_MODEL, query: { text: query }, passages: passages.slice(0, 40).map((text) => ({ text })), truncate: 'END' }, 60_000);
+  return json(200, { rankings: (r?.rankings || []).map((x: any) => ({ index: x.index, score: x.logit })) });
+}
+
+function latexTableToMarkdown(tex: string) {
+  const inner = tex.replace(/\\begin\{tabular\}\{[^}]*\}/, '').replace(/\\end\{tabular\}/, '').replace(/\\hline/g, '');
+  const rows = inner
+    .split(/\\\\/)
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => r.split('&').map((c) => c.replace(/\*\*/g, '').replace(/\\textbf\{([^}]*)\}/g, '$1').replace(/\|/g, '\\|').trim()));
+  if (!rows.length) return tex;
+  const width = Math.max(...rows.map((r) => r.length));
+  const pad = (r: string[]) => Array.from({ length: width }, (_, i) => r[i] || '');
+  const head = pad(rows[0]);
+  return [`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`, ...rows.slice(1).map((r) => `| ${pad(r).join(' | ')} |`)].join('\n');
+}
+
+async function doParse(key: string, body: any) {
+  const image = String(body.image || '');
+  const mime = /^image\/(png|jpe?g)$/.test(body.mime) ? body.mime : 'image/jpeg';
+  if (image.length < 100) return fail(400, 'Halaman dokumen kosong.');
+  if (image.length > 190_000) return fail(413, 'Gambar halaman terlalu besar untuk Nemotron Parse (maks ±140 KB).');
+  const r = await nvHttp(
+    'https://integrate.api.nvidia.com/v1/chat/completions',
+    key,
+    {
+      model: 'nvidia/nemotron-parse',
+      max_tokens: 8192,
+      messages: [{ role: 'user', content: `<img src="data:${mime};base64,${image}" />` }],
+      tools: [{ type: 'function', function: { name: 'markdown_bbox' } }],
+      tool_choice: { type: 'function', function: { name: 'markdown_bbox' } },
+    },
+    110_000
+  );
+  const call = r?.choices?.[0]?.message?.tool_calls?.[0];
+  let items: any[] = [];
+  try {
+    items = JSON.parse(call?.function?.arguments || '[]').flat();
+  } catch {
+    const t = r?.choices?.[0]?.message?.content || '';
+    return json(200, { text: String(t).trim(), elements: 0 });
+  }
+  const skip = new Set(['Page-header', 'Page-footer']);
+  const ordered = items
+    .filter((it) => it && typeof it.text === 'string' && it.text.trim() && !skip.has(it.type))
+    .sort((a, b) => (a.bbox?.ymin ?? 0) - (b.bbox?.ymin ?? 0) || (a.bbox?.xmin ?? 0) - (b.bbox?.xmin ?? 0));
+  const parts = ordered.map((it) => {
+    let t = it.text.trim();
+    if (/\\begin\{tabular\}/.test(t)) t = latexTableToMarkdown(t);
+    if (it.type === 'Title') return `# ${t.replace(/^#+\s*/, '')}`;
+    if (it.type === 'Section-header') return `## ${t.replace(/^#+\s*/, '')}`;
+    if (it.type === 'List-item' && !/^[-*•\d]/.test(t)) return `- ${t}`;
+    return t;
+  });
+  return json(200, { text: parts.join('\n\n'), elements: ordered.length });
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   const uid = userId(req);
@@ -373,6 +453,12 @@ Deno.serve(async (req) => {
         return await doImage(key, body);
       case 'ocr':
         return await doOcr(key, body);
+      case 'embed':
+        return await doEmbed(key, body);
+      case 'rerank':
+        return await doRerank(key, body);
+      case 'parse':
+        return await doParse(key, body);
       default:
         return fail(400, 'Aksi tidak dikenal.');
     }

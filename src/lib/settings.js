@@ -17,6 +17,7 @@ export const DEFAULTS = {
   voice: { lang: 'id-ID', rate: 1, autoListen: true, engine: 'device', nvidiaVoice: null },
   imageModel: 'flux.2-klein-4b',
   translateTarget: 'en',
+  semantic: true,
   modelCache: {},
 };
 

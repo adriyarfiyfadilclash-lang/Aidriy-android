@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  Bookmark,
   Check,
   CheckSquare,
   FolderClosed,
@@ -13,7 +14,6 @@ import {
   Pencil,
   Plus,
   Search,
-  Star,
   Trash2,
   X,
 } from 'lucide-react';
@@ -284,10 +284,10 @@ export default function Drawer() {
               {!selecting && <div className="drawer-divider" />}
               {starred.length > 0 && (
                 <>
-                  <div className="drawer-section">Berbintang</div>
+                  <div className="drawer-section">Tersimpan</div>
                   <div className="drawer-list">
                     {starred.map((c) => (
-                      <ChatRow key={c.id} c={c} icon={<Star size={20} strokeWidth={1.5} />} active={c.id === activeId} selected={picked.has(c.id)} {...rowProps} />
+                      <ChatRow key={c.id} c={c} icon={<Bookmark size={20} strokeWidth={1.5} />} active={c.id === activeId} selected={picked.has(c.id)} {...rowProps} />
                     ))}
                   </div>
                 </>

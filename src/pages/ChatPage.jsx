@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { FolderClosed, Ghost, MoreHorizontal, Pencil, Share2, Star, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, Bookmark, BookmarkCheck, ChevronDown, ChevronUp, FolderClosed, Ghost, MoreVertical, Paperclip, Pencil, Search, Share2, SquarePen, Trash2, X } from 'lucide-react';
 import { useApp } from '../state';
 import * as db from '../lib/db';
 import { PROVIDERS, effortLabel, shortModelName, streamChat } from '../lib/providers';
@@ -22,6 +22,10 @@ import AttachSheet from '../components/AttachSheet';
 import ModelPicker from '../components/ModelPicker';
 import CanvasView from '../components/CanvasView';
 import VoiceMode from '../components/VoiceMode';
+import ActionMenu from '../components/ActionMenu';
+import ChatFilesSheet from '../components/ChatFilesSheet';
+import useStickToBottom from '../lib/useStickToBottom';
+import useChatSearch from '../lib/useChatSearch';
 import { generateImage, readText, translate, languageLabel, LANGUAGES, IMAGE_MODELS, NvidiaToolError } from '../lib/nvidiaTools';
 import ProjectPicker from '../components/ProjectPicker';
 import ShareChatSheet, { shareOrCopy } from '../components/ShareChatSheet';
@@ -120,8 +124,11 @@ export default function ChatPage() {
 
   const createdRef = useRef(null);
   const abortRef = useRef(null);
-  const listRef = useRef(null);
-  const stickRef = useRef(true);
+  const scroller = useStickToBottom();
+  const listRef = scroller.scrollRef;
+  const [menuAnchor, setMenuAnchor] = useState(null); // tombol ⋮ yang membuka menu
+  const [searching, setSearching] = useState(false);
+  const [searchQ, setSearchQ] = useState('');
   const cacheRef = useRef(new Map());
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -195,7 +202,7 @@ export default function ChatPage() {
         }
         setConv(c);
         setMessages(msgs);
-        stickRef.current = true;
+        scroller.stick();
       } catch (e) {
         if (!cancelled) showToast(e.message, 'error');
       } finally {
@@ -218,17 +225,12 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app.conversations]);
 
-  // Gulir otomatis ke bawah bila pengguna sedang di bawah.
+  // Ganti chat → tutup pencarian & menu
   useEffect(() => {
-    const el = listRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
-
-  const onScroll = () => {
-    const el = listRef.current;
-    if (!el) return;
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  };
+    setSearching(false);
+    setSearchQ('');
+    setMenuAnchor(null);
+  }, [id]);
 
   const project = useMemo(() => {
     const pid = conv ? conv.project_id : newProjectId;
@@ -421,7 +423,7 @@ export default function ChatPage() {
       ...prev.map((m) => (m.role === 'assistant' && parentId && groupKey(m) === parentId && m._sel ? { ...m, _sel: false } : m)),
       ai,
     ]);
-    stickRef.current = true;
+    scroller.stick();
 
     let text = '';
     let thinking = '';
@@ -650,7 +652,7 @@ export default function ChatPage() {
       ...prev.map((m) => (m.role === 'assistant' && parentId && groupKey(m) === parentId && m._sel ? { ...m, _sel: false } : m)),
       { id: tempId, role: 'assistant', content: '', streaming: true, status: TOOL_STATUS[toolSpec.type], meta: {}, parent_id: parentId, version, _sel: true },
     ]);
-    stickRef.current = true;
+    scroller.stick();
     let content = '';
     let meta = { provider: 'nvidia', tool: toolSpec.type };
     let error = '';
@@ -966,14 +968,46 @@ export default function ChatPage() {
   };
 
   // ---------- Menu percakapan ----------
+  // "Simpan obrolan ini": ditandai di database (kolom starred) dan muncul di bagian Tersimpan pada riwayat.
   const toggleStar = async () => {
+    const next = !conv.starred;
     try {
-      const c = await db.updateConversation(conv.id, { starred: !conv.starred });
+      const c = await db.updateConversation(conv.id, { starred: next });
       setConv(c);
       refreshConversations();
+      showToast(next ? 'Obrolan disimpan · ada di bagian Tersimpan' : 'Dihapus dari Tersimpan');
     } catch (e) {
-      showToast(e.message, 'error');
+      showToast(`Gagal menyimpan obrolan: ${e.message}`, 'error');
     }
+  };
+
+  // "Obrolan baru": percakapan lama sudah tersimpan per pesan; konfirmasi bila ada yang bisa hilang.
+  const [confirmNew, setConfirmNew] = useState(null); // pesan konfirmasi
+  const startNewChat = (force = false) => {
+    const risks = [];
+    if (busyRef.current) risks.push('Jawaban AI yang sedang ditulis akan dihentikan.');
+    if (draft.trim() || attachments.length) risks.push('Pesan dan lampiran yang belum dikirim akan dibuang.');
+    if (incognito && messages.length) risks.push('Chat incognito ini tidak disimpan dan akan hilang.');
+    if (risks.length && !force) {
+      setConfirmNew(risks.join(' '));
+      return;
+    }
+    if (busyRef.current) abortRef.current?.abort();
+    tap();
+    navigate('/', { state: { fresh: Date.now() } });
+  };
+
+  const searchState = useChatSearch({
+    rootRef: scroller.contentRef,
+    scrollRef: scroller.scrollRef,
+    active: searching,
+    query: searchQ,
+    version: messages,
+    onNavigate: scroller.unstick,
+  });
+  const closeSearch = () => {
+    setSearching(false);
+    setSearchQ('');
   };
 
   const chooseProject = async (pid) => {
@@ -1029,14 +1063,58 @@ export default function ChatPage() {
         }
       />
     );
+  } else if (conv && searching) {
+    const q = searchQ.trim();
+    header = (
+      <header className="topbar chat-search-bar" role="search">
+        <IconButton label="Tutup pencarian" onClick={closeSearch}>
+          <ArrowLeft size={24} strokeWidth={1.75} />
+        </IconButton>
+        <input
+          className="chat-search-input"
+          value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (e.shiftKey) searchState.next();
+              else searchState.prev();
+            }
+            if (e.key === 'Escape') closeSearch();
+          }}
+          placeholder="Cari di chat ini"
+          aria-label="Cari di chat ini"
+          autoFocus
+          enterKeyHint="search"
+        />
+        <span className="chat-search-count" aria-live="polite">
+          {q ? (searchState.count ? `${searchState.index + 1}/${searchState.count}` : 'Tidak ada') : ''}
+        </span>
+        <IconButton label="Hasil sebelumnya" onClick={searchState.prev} disabled={!searchState.count}>
+          <ChevronUp size={22} />
+        </IconButton>
+        <IconButton label="Hasil berikutnya" onClick={searchState.next} disabled={!searchState.count}>
+          <ChevronDown size={22} />
+        </IconButton>
+      </header>
+    );
   } else if (conv) {
     header = (
       <TopBar
         title={<span className="truncate">{conv.title}</span>}
         onTitleClick={() => setSheet('menu')}
         right={
-          <IconButton label="Opsi chat" onClick={() => setSheet('menu')}>
-            <MoreHorizontal size={24} />
+          <IconButton
+            label="Opsi lainnya"
+            className={menuAnchor ? 'on' : ''}
+            aria-haspopup="menu"
+            aria-expanded={!!menuAnchor}
+            onClick={(e) => {
+              tap();
+              setMenuAnchor(e.currentTarget);
+            }}
+          >
+            <MoreVertical size={24} />
           </IconButton>
         }
       />
@@ -1106,7 +1184,12 @@ export default function ChatPage() {
       <div className="chat-col">
       {header}
 
-      <main className="chat-scroll" ref={listRef} onScroll={onScroll}>
+      {searching && searchQ.trim() && !searchState.count && (
+        <div className="chat-search-empty" role="status">
+          Tidak ada “{searchQ.trim()}” di chat ini. Coba kata lain atau cari di semua chat lewat menu riwayat.
+        </div>
+      )}
+      <main className="chat-scroll" ref={scroller.setScroll}>
         {loading && (
           <div className="center-fill">
             <span className="spinner" />
@@ -1130,7 +1213,7 @@ export default function ChatPage() {
           </div>
         )}
         {!empty && (
-          <div className="messages">
+          <div className="messages" ref={scroller.setContent}>
             {visible.list.map((m) => {
               const v = visible.info.get(m.id);
               return (
@@ -1156,9 +1239,23 @@ export default function ChatPage() {
             })}
           </div>
         )}
+        {!empty && <div className="scroll-sentinel" ref={scroller.setSentinel} aria-hidden="true" />}
       </main>
 
       <div className="composer-wrap">
+        <button
+          type="button"
+          className={`scroll-bottom-btn ${scroller.showButton && !empty ? 'show' : ''}`}
+          onClick={() => {
+            tap();
+            scroller.scrollToBottom(true);
+          }}
+          aria-label="Gulir ke pesan terbaru"
+          tabIndex={scroller.showButton && !empty ? 0 : -1}
+          aria-hidden={!(scroller.showButton && !empty)}
+        >
+          <ArrowDown size={20} strokeWidth={2} />
+        </button>
         <Composer
           value={draft}
           setValue={setDraft}
@@ -1237,8 +1334,8 @@ export default function ChatPage() {
         <Group>
           <Row icon={<Pencil size={22} strokeWidth={1.6} />} title="Ganti nama" onClick={() => setSheet('rename')} />
           <Row
-            icon={<Star size={22} strokeWidth={1.6} />}
-            title={conv?.starred ? 'Lepas bintang' : 'Beri bintang'}
+            icon={conv?.starred ? <BookmarkCheck size={22} strokeWidth={1.6} /> : <Bookmark size={22} strokeWidth={1.6} />}
+            title={conv?.starred ? 'Hapus dari Tersimpan' : 'Simpan obrolan ini'}
             onClick={() => {
               setSheet(null);
               toggleStar();
@@ -1267,6 +1364,45 @@ export default function ChatPage() {
           setTool((t) => (t ? { ...t, target: v } : t));
           app.setSettings({ translateTarget: v });
         }}
+      />
+      <ActionMenu
+        open={!!menuAnchor && !!conv}
+        anchor={menuAnchor}
+        label="Opsi chat"
+        onClose={() => setMenuAnchor(null)}
+        items={[
+          {
+            key: 'save',
+            label: conv?.starred ? 'Hapus dari Tersimpan' : 'Simpan obrolan ini',
+            icon: conv?.starred ? <BookmarkCheck size={21} /> : <Bookmark size={21} />,
+            onSelect: toggleStar,
+          },
+          { key: 'new', label: 'Obrolan baru', icon: <SquarePen size={21} />, onSelect: () => startNewChat() },
+          { key: 'files', label: 'File yang diunggah', icon: <Paperclip size={21} />, onSelect: () => setSheet('files') },
+          {
+            key: 'search',
+            label: 'Cari di chat',
+            icon: <Search size={21} />,
+            onSelect: () => {
+              setSearching(true);
+            },
+          },
+          { divider: true },
+          { key: 'rename', label: 'Ganti nama', icon: <Pencil size={21} />, onSelect: () => setSheet('rename') },
+          { key: 'project', label: 'Pindahkan ke proyek', icon: <FolderClosed size={21} />, onSelect: () => setSheet('project') },
+          { key: 'share', label: 'Bagikan isi chat', icon: <Share2 size={21} />, onSelect: () => setSheet('share') },
+          { key: 'delete', label: 'Hapus chat', icon: <Trash2 size={21} />, danger: true, onSelect: () => setSheet('delete') },
+        ]}
+      />
+      <ChatFilesSheet open={sheet === 'files'} onClose={() => setSheet(null)} messages={messages} getLocal={(aid) => cacheRef.current.get(aid)} />
+      <ConfirmDialog
+        open={!!confirmNew}
+        onClose={() => setConfirmNew(null)}
+        title="Mulai obrolan baru?"
+        message={confirmNew || ''}
+        confirmLabel="Mulai baru"
+        danger={false}
+        onConfirm={() => startNewChat(true)}
       />
       <ShareChatSheet open={sheet === 'share'} onClose={() => setSheet(null)} title={conv?.title} messages={visible.list} />
 

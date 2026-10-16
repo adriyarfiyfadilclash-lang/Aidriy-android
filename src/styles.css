@@ -3706,3 +3706,242 @@ button.p-row:active,
   max-height: 86dvh;
   overflow-y: auto;
 }
+
+/* ---------- Tombol gulir ke bawah (seperti ChatGPT) ---------- */
+.composer-wrap {
+  position: relative;
+}
+.scroll-bottom-btn {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(31, 28, 24, 0.14);
+  opacity: 0;
+  transform: translate(-50%, 10px) scale(0.92);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.scroll-bottom-btn.show {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  pointer-events: auto;
+}
+.scroll-bottom-btn:active {
+  background: var(--surface-2);
+}
+.scroll-sentinel {
+  height: 1px;
+  flex-shrink: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scroll-bottom-btn {
+    transition: none;
+  }
+}
+
+/* ---------- Menu aksi (⋮) ---------- */
+.action-menu {
+  position: fixed;
+  background: var(--surface);
+  border-radius: 20px;
+  box-shadow: 0 12px 36px rgba(31, 28, 24, 0.16), 0 2px 6px rgba(31, 28, 24, 0.06);
+  padding: 6px;
+  overflow-y: auto;
+  transform-origin: top right;
+  animation: menu-in 0.14s ease-out;
+}
+.action-menu.leaving {
+  animation: menu-out 0.14s ease-in forwards;
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(-4px);
+  }
+}
+@keyframes menu-out {
+  to {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+}
+.action-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 14px;
+  border-radius: 14px;
+  text-align: left;
+  color: var(--text);
+}
+.action-menu-item:active,
+.action-menu-item:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+.action-menu-item:disabled {
+  opacity: 0.45;
+}
+.action-menu-item.danger {
+  color: var(--danger);
+}
+.action-menu-icon {
+  display: inline-flex;
+  width: 24px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.action-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.action-menu-label {
+  font-size: 16px;
+}
+.action-menu-hint {
+  font-size: 13px;
+  color: var(--muted);
+}
+.action-menu-divider {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--border);
+}
+.icon-btn.on {
+  background: var(--surface-2);
+}
+
+/* ---------- Cari di chat ---------- */
+.chat-search-bar {
+  gap: 2px;
+}
+.chat-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  border: none;
+  border-radius: 21px;
+  padding: 0 14px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 16px;
+  outline: none;
+}
+.chat-search-count {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 46px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chat-search-bar .icon-btn:disabled {
+  opacity: 0.35;
+}
+::highlight(chat-search) {
+  background-color: var(--accent-soft);
+  color: inherit;
+}
+::highlight(chat-search-current) {
+  background-color: var(--accent);
+  color: #fff;
+}
+
+/* ---------- File yang diunggah ---------- */
+.files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px 10px 12px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.files-thumb,
+.files-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.files-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.files-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.files-name {
+  font-size: 15px;
+  font-weight: 500;
+}
+.files-meta {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.files-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.files-btn:active {
+  background: var(--surface-2);
+}
+.files-btn:disabled {
+  opacity: 0.3;
+}
+.files-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 24px 36px;
+  text-align: center;
+  color: var(--muted);
+}
+.files-empty > div:first-of-type {
+  color: var(--text);
+  font-weight: 500;
+}
+.chat-search-empty {
+  margin: 0 16px 6px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  font-size: 14px;
+  color: var(--muted);
+  flex-shrink: 0;
+}

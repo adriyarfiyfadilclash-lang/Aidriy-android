@@ -35,7 +35,7 @@ export default function ActionMenu({ open, anchor, items, onClose, label = 'Menu
   }, [open]);
 
   useLayoutEffect(() => {
-    if (!open || !anchor || !ref.current) return;
+    if (!open || !mounted || !anchor || !ref.current) return undefined;
     const place = () => {
       const r = anchor.getBoundingClientRect();
       const w = Math.min(width, window.innerWidth - 24);
@@ -49,10 +49,10 @@ export default function ActionMenu({ open, anchor, items, onClose, label = 'Menu
     place();
     window.addEventListener('resize', place);
     return () => window.removeEventListener('resize', place);
-  }, [open, anchor, width]);
+  }, [open, mounted, anchor, width]);
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open || !mounted) return undefined;
     const onKey = (e) => {
       if (e.key === 'Escape') onClose();
     };
@@ -63,7 +63,7 @@ export default function ActionMenu({ open, anchor, items, onClose, label = 'Menu
       window.removeEventListener('keydown', onKey);
       clearTimeout(t);
     };
-  }, [open, onClose]);
+  }, [open, mounted, onClose]);
 
   if (!mounted) return null;
 

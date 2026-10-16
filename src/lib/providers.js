@@ -635,6 +635,8 @@ function nvidiaMessages(system, history, vision) {
   return msgs;
 }
 
+let nvidiaSearchNoted = false;
+
 async function streamNvidia(o, cb) {
   const vision = NVIDIA_VISION.test(o.model);
   const body = {
@@ -644,8 +646,24 @@ async function streamNvidia(o, cb) {
     stream_options: { include_usage: true },
     max_tokens: 8192,
   };
-  if (o.webSearch) cb.onNotice('Pencarian web belum tersedia untuk model NVIDIA, jadi dijawab dari pengetahuan model.');
-  const res = await nvidiaFetch(o.apiKey, 'chat/completions', body, o.signal);
+  if (o.webSearch && !nvidiaSearchNoted) {
+    nvidiaSearchNoted = true;
+    cb.onNotice('Pencarian web belum tersedia untuk model NVIDIA, jadi dijawab dari pengetahuan model.');
+  }
+  // Mode Cepat: minta model melewati proses berpikir panjang (didukung sebagian besar model NIM).
+  if (o.effort === 'off') {
+    if (/gpt-oss/i.test(o.model)) body.reasoning_effort = 'low';
+    else body.chat_template_kwargs = { enable_thinking: false };
+  } else if (/gpt-oss/i.test(o.model)) {
+    body.reasoning_effort = o.effort === 'high' ? 'high' : 'medium';
+  }
+  let res = await nvidiaFetch(o.apiKey, 'chat/completions', body, o.signal);
+  if (res.status === 400 && (body.chat_template_kwargs || body.reasoning_effort)) {
+    // Model tidak mengenal opsi itu: kirim ulang tanpa opsi tambahan.
+    delete body.chat_template_kwargs;
+    delete body.reasoning_effort;
+    res = await nvidiaFetch(o.apiKey, 'chat/completions', body, o.signal);
+  }
   await ensureOk(res);
   const usage = { input: 0, output: 0 };
   // Sebagian model menulis proses berpikir di dalam <think>…</think> pada teks jawaban.

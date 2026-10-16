@@ -11,7 +11,8 @@ const KIND_LABEL = { image: 'Gambar', pdf: 'PDF', text: 'Teks', file: 'Berkas' }
 function typeLabel(a) {
   const ext = (a.name || '').split('.').pop();
   const base = KIND_LABEL[a.kind] || 'Berkas';
-  return ext && ext !== a.name && ext.length <= 5 ? `${base} · ${ext.toUpperCase()}` : base;
+  if (!ext || ext === a.name || ext.length > 5 || ext.toUpperCase() === base.toUpperCase()) return base;
+  return `${base} · ${ext.toUpperCase()}`;
 }
 
 function b64Blob(b64, mime) {

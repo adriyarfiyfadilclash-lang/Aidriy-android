@@ -1,9 +1,9 @@
 import { useRef } from 'react';
-import { Camera, FileUp, FolderClosed, Globe, Image as ImageIcon } from 'lucide-react';
+import { Camera, FileUp, FolderClosed, Globe, Image as ImageIcon, Languages, ScanText, Sparkles } from 'lucide-react';
 import { isNative, tap } from '../lib/native';
 import { Group, Row, Sheet, Toggle } from './ui';
 
-export default function AttachSheet({ open, onClose, onFiles, onCamera, webSearch, onWebSearch, projectName, onPickProject }) {
+export default function AttachSheet({ open, onClose, onFiles, onCamera, webSearch, onWebSearch, projectName, onPickProject, nvidiaReady, onTool, activeTool }) {
   const photoRef = useRef();
   const fileRef = useRef();
   const camRef = useRef();
@@ -59,6 +59,35 @@ export default function AttachSheet({ open, onClose, onFiles, onCamera, webSearc
         accept="image/*,application/pdf,text/*,.md,.csv,.json,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.java,.kt,.c,.cpp,.h,.cs,.go,.rs,.php,.rb,.sql,.yaml,.yml,.toml,.sh,.swift,.dart,.log"
         onChange={handle}
       />
+
+      {onTool && (
+        <>
+          <div className="sheet-section">Alat NVIDIA</div>
+          <Group>
+            <Row
+              icon={<Sparkles size={24} strokeWidth={1.6} />}
+              title="Buat gambar"
+              subtitle={nvidiaReady ? 'Tulis deskripsi, gambar dibuat oleh FLUX' : 'Butuh API key NVIDIA'}
+              right={activeTool === 'image' ? <span className="badge-on">Aktif</span> : null}
+              onClick={() => onTool('image')}
+            />
+            <Row
+              icon={<ScanText size={24} strokeWidth={1.6} />}
+              title="Baca teks dari foto"
+              subtitle={nvidiaReady ? 'Struk, dokumen, papan tulis (OCR)' : 'Butuh API key NVIDIA'}
+              right={activeTool === 'ocr' ? <span className="badge-on">Aktif</span> : null}
+              onClick={() => onTool('ocr')}
+            />
+            <Row
+              icon={<Languages size={24} strokeWidth={1.6} />}
+              title="Terjemahkan"
+              subtitle={nvidiaReady ? 'Riva Translate, banyak bahasa' : 'Butuh API key NVIDIA'}
+              right={activeTool === 'translate' ? <span className="badge-on">Aktif</span> : null}
+              onClick={() => onTool('translate')}
+            />
+          </Group>
+        </>
+      )}
 
       <Group>
         <Row

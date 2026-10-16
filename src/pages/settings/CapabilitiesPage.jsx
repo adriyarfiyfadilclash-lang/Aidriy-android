@@ -1,13 +1,17 @@
-import { Brain, Globe, Images, Lightbulb, Shapes } from 'lucide-react';
+import { useState } from 'react';
+import { Brain, Globe, Images, Lightbulb, Shapes, Sparkles } from 'lucide-react';
+import { IMAGE_MODELS } from '../../lib/nvidiaTools';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../../state';
 import { EFFORTS } from '../../lib/providers';
 import { tap } from '../../lib/native';
-import { Group, Row, Toggle, TopBar } from '../../components/ui';
+import { ChoiceDialog, Group, Row, Toggle, TopBar } from '../../components/ui';
 
 export default function CapabilitiesPage() {
   const { settings, setSettings } = useApp();
   const navigate = useNavigate();
+  const [pickImage, setPickImage] = useState(false);
+  const imageModel = IMAGE_MODELS.find((m) => m.id === settings.imageModel) || IMAGE_MODELS[0];
   return (
     <div className="page">
       <TopBar back title={<span className="serif-title">Kemampuan</span>} />
@@ -64,7 +68,27 @@ export default function CapabilitiesPage() {
         <p className="muted small pad-x">
           "Sedang" dan "Tinggi" membuat AI berpikir dulu sebelum menjawab: lebih teliti tetapi lebih lambat dan lebih mahal. Jika model tidak mendukung, A.I.DRIY otomatis menjawab tanpa mode berpikir.
         </p>
+        <Group>
+          <Row
+            icon={<Sparkles size={24} strokeWidth={1.5} />}
+            title="Model pembuat gambar (NVIDIA)"
+            subtitle={settings.keys.nvidia ? imageModel.label : `${imageModel.label} · butuh API key NVIDIA`}
+            chevron
+            onClick={() => {
+              tap();
+              setPickImage(true);
+            }}
+          />
+        </Group>
       </main>
+      <ChoiceDialog
+        open={pickImage}
+        onClose={() => setPickImage(false)}
+        title="Model pembuat gambar"
+        value={imageModel.id}
+        options={IMAGE_MODELS.map((m) => ({ value: m.id, label: m.label }))}
+        onChange={(v) => setSettings({ imageModel: v })}
+      />
     </div>
   );
 }

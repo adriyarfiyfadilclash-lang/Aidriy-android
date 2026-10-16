@@ -19,13 +19,16 @@ import {
   X,
 } from 'lucide-react';
 import CanvasBlock from './CanvasBlock';
+import GeneratedImage from './GeneratedImage';
+import { languageLabel } from '../lib/nvidiaTools';
+import { speakText, stopText } from '../lib/voice';
 import { useApp } from '../state';
 import { PROVIDERS } from '../lib/providers';
 import Markdown, { SourcesContext } from './Markdown';
 import ImageGallery from './ImageGallery';
 import Sources from './Sources';
 import { splitSegments, plainText, speakableText } from '../lib/parse';
-import { copyText, openExternal, speak, stopSpeaking, tap } from '../lib/native';
+import { copyText, openExternal, tap } from '../lib/native';
 import { formatSize } from '../lib/files';
 
 function AttachmentChips({ items }) {
@@ -117,6 +120,14 @@ function Message({
         </div>
       )}
 
+      {msg.meta?.genImage && <GeneratedImage gen={msg.meta.genImage} />}
+      {msg.meta?.translate && (
+        <div className="msg-tool-note">
+          Terjemahan {languageLabel(msg.meta.translate.source)} → {languageLabel(msg.meta.translate.target)}
+          {msg.meta.translate.via ? ' (lewat Inggris)' : ''} · NVIDIA Riva
+        </div>
+      )}
+
       {untagged.map((b) => (
         <ImageGallery key={b.id} block={b} onRetry={retry(b)} />
       ))}
@@ -196,7 +207,7 @@ function Message({
 
       {sources.length > 0 && !streaming && <Sources sources={sources} />}
 
-      {!streaming && msg.content && (
+      {!streaming && (msg.content || msg.meta?.genImage) && (
         <div className="msg-actions" role="toolbar" aria-label="Aksi pesan">
           {versions && versions.count > 1 && (
             <span className="ver-nav" aria-label={`Versi ${versions.index} dari ${versions.count}`}>
@@ -217,7 +228,7 @@ function Message({
             aria-label="Salin"
             onClick={async () => {
               tap();
-              const ok = await copyText(plainText(msg.content));
+              const ok = await copyText(msg.meta?.genImage && !msg.content ? msg.meta.genImage.prompt : plainText(msg.content));
               if (!ok) {
                 showToast('Gagal menyalin teks', 'error');
                 return;
@@ -289,15 +300,15 @@ function Message({
             onClick={async () => {
               tap();
               if (speaking) {
-                await stopSpeaking();
+                await stopText();
                 setSpeaking(false);
                 return;
               }
               setSpeaking(true);
               try {
-                await speak(speakableText(msg.content), voice);
-              } catch {
-                /* abaikan */
+                await speakText(speakableText(msg.content || ''), voice);
+              } catch (e) {
+                showToast(e.message || 'Gagal membacakan', 'error');
               }
               setSpeaking(false);
             }}

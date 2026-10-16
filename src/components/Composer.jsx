@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, AudioLines, FileText, Mic, Plus, RotateCcw, Square, X } from 'lucide-react';
+import { ArrowUp, AudioLines, ChevronDown, FileText, Languages, Mic, Plus, RotateCcw, ScanText, Sparkles, Square, X } from 'lucide-react';
 import { startListening, tap, voiceErrorMessage } from '../lib/native';
+import { startRecording } from '../lib/recorder';
+import { transcribe, LANGUAGES } from '../lib/nvidiaTools';
+import { usesNvidiaVoice } from '../lib/voice';
+
+const TOOL_LABEL = { image: 'Buat gambar', ocr: 'Baca teks dari foto', translate: 'Terjemahkan ke' };
+const TOOL_ICON = { image: Sparkles, ocr: ScanText, translate: Languages };
 import { useApp } from '../state';
 
 export default function Composer({
@@ -18,11 +24,18 @@ export default function Composer({
   onModel,
   onVoiceMode,
   placeholder,
+  tool,
+  onClearTool,
+  onPickLanguage,
 }) {
   const { settings, showToast } = useApp();
   const ref = useRef();
   const [dictating, setDictating] = useState(false);
   const [micLive, setMicLive] = useState(false); // true hanya setelah mikrofon benar-benar aktif
+  const [level, setLevel] = useState(0);
+  const [transcribing, setTranscribing] = useState(false);
+  const recRef = useRef(null);
+  const nvidiaStt = usesNvidiaVoice(settings);
   const [review, setReview] = useState(null); // { base, text } setelah dikte selesai: Rekam ulang / Batal
   const stopRef = useRef(null);
   const baseRef = useRef('');
@@ -47,6 +60,47 @@ export default function Composer({
     cancelledRef.current = false;
     setMicLive(false);
     setDictating(true);
+    if (nvidiaStt) {
+      try {
+        const rec = await startRecording({ onLevel: setLevel, onAutoStop: () => stopRef.current?.() });
+        recRef.current = rec;
+        setMicLive(true);
+        stopRef.current = async () => {
+          stopRef.current = null;
+          const r = await rec.stop();
+          setMicLive(false);
+          if (!r || cancelledRef.current) {
+            setDictating(false);
+            return;
+          }
+          if (r.seconds < 0.4) {
+            setDictating(false);
+            showToast('Rekaman terlalu pendek.');
+            return;
+          }
+          setTranscribing(true);
+          try {
+            const lang = (settings.voice.lang || 'id-ID').split('-')[0];
+            const said = await transcribe(settings.keys.nvidia, { wavBase64: r.wavBase64, sampleRate: r.sampleRate, language: lang });
+            if (cancelledRef.current) return;
+            if (!said) showToast('Tidak ada suara yang dikenali. Coba bicara lebih dekat ke mikrofon.');
+            const finalText = (baseRef.current + said).trimEnd();
+            setValue(finalText);
+            if (said) setReview({ base: baseRef.current.trimEnd(), text: finalText });
+          } catch (e) {
+            showToast(`Transkripsi NVIDIA gagal: ${e.message}`, 'error');
+          } finally {
+            setTranscribing(false);
+            setDictating(false);
+            setTimeout(() => ref.current?.focus(), 50);
+          }
+        };
+      } catch (e) {
+        setDictating(false);
+        showToast(e.message, 'error');
+      }
+      return;
+    }
     try {
       stopRef.current = await startListening({
         lang: settings.voice.lang,
@@ -87,6 +141,12 @@ export default function Composer({
     tap();
     cancelledRef.current = true;
     setValue(baseRef.current.trimEnd());
+    if (recRef.current) {
+      recRef.current.cancel();
+      recRef.current = null;
+      stopRef.current = null;
+      setTranscribing(false);
+    }
     if (stopRef.current) await stopRef.current();
     setDictating(false);
     setMicLive(false);
@@ -122,24 +182,55 @@ export default function Composer({
         <>
           {value && <div className="dictation-preview">{value}</div>}
           <div className="dictation-status" aria-live="polite">
-            {micLive ? 'Mendengarkan… ketuk ■ bila selesai' : 'Menyiapkan mikrofon…'}
+            {transcribing
+              ? 'Mentranskripsi dengan NVIDIA Whisper…'
+              : micLive
+                ? nvidiaStt
+                  ? 'Merekam (NVIDIA)… ketuk ■ bila selesai'
+                  : 'Mendengarkan… ketuk ■ bila selesai'
+                : 'Menyiapkan mikrofon…'}
           </div>
           <div className="dictation-bar">
             <button type="button" className="round-btn soft" onClick={cancelDictation} aria-label="Batal dikte">
               <X size={22} />
             </button>
-            <div className={`wave-dots ${micLive ? '' : 'idle'}`} aria-hidden="true">
-              {Array.from({ length: 28 }).map((_, i) => (
-                <span key={i} style={{ animationDelay: `${(i % 7) * 0.12}s` }} />
-              ))}
-            </div>
-            <button type="button" className="round-btn dark" onClick={stopDictation} aria-label="Selesai dikte">
+            {nvidiaStt ? (
+              <div className="rec-level" aria-hidden="true">
+                <span style={{ width: `${Math.round((transcribing ? 1 : level) * 100)}%` }} />
+              </div>
+            ) : (
+              <div className={`wave-dots ${micLive ? '' : 'idle'}`} aria-hidden="true">
+                {Array.from({ length: 28 }).map((_, i) => (
+                  <span key={i} style={{ animationDelay: `${(i % 7) * 0.12}s` }} />
+                ))}
+              </div>
+            )}
+            <button type="button" className="round-btn dark" onClick={stopDictation} disabled={transcribing} aria-label="Selesai dikte">
               <Square size={16} fill="currentColor" />
             </button>
           </div>
         </>
       ) : (
         <>
+          {tool && (
+            <div className="tool-chip-row">
+              <span className="tool-chip">
+                {(() => {
+                  const I = TOOL_ICON[tool.type];
+                  return <I size={16} />;
+                })()}
+                {TOOL_LABEL[tool.type]}
+                {tool.type === 'translate' && (
+                  <button type="button" className="tool-chip-lang" onClick={onPickLanguage} aria-label="Pilih bahasa tujuan">
+                    {LANGUAGES.find((l) => l.id === tool.target)?.label || 'Inggris'} <ChevronDown size={14} />
+                  </button>
+                )}
+                <button type="button" onClick={onClearTool} aria-label="Matikan alat">
+                  <X size={15} />
+                </button>
+              </span>
+            </div>
+          )}
           {reviewing && (
             <div className="dictation-chips">
               <button type="button" className="chip" onClick={() => startDictation(review.base)}>

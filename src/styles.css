@@ -3572,3 +3572,137 @@ button.p-row:active,
   margin: 0 0 10px;
   line-height: 1.45;
 }
+
+/* ---------- Alat NVIDIA ---------- */
+.sheet-section {
+  font-size: 14px;
+  color: var(--muted);
+  padding: 14px 20px 6px;
+}
+.badge-on {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+.tool-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 8px;
+  flex-wrap: wrap;
+}
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 6px 0 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.tool-chip button {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+.tool-chip .tool-chip-lang {
+  width: auto;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+  height: 24px;
+}
+.gen-image {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  max-width: 420px;
+}
+.gen-image img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+.gen-image-loading {
+  aspect-ratio: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.gen-image-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+}
+.gen-image-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: auto;
+}
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+.image-viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.image-viewer .icon-btn {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 10px);
+  right: 10px;
+  color: #fff;
+}
+.rec-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rec-level {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.rec-level span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.08s linear;
+}
+.msg-tool-note {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.dialog {
+  max-height: 86dvh;
+  overflow-y: auto;
+}

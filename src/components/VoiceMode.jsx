@@ -3,9 +3,7 @@ import { Info, MessageSquare, Mic, MicOff, PhoneOff, RotateCcw } from 'lucide-re
 import { useApp, useBackClose } from '../state';
 import {
   onAppBackground,
-  speak,
   startListening,
-  stopSpeaking,
   tap,
   voiceCapabilities,
   voiceErrorCode,
@@ -13,6 +11,52 @@ import {
 } from '../lib/native';
 import { speakableText } from '../lib/parse';
 import { LogoMark } from './Logo';
+import { speakText as speak, stopText as stopSpeaking, usesNvidiaVoice } from '../lib/voice';
+import { startRecording } from '../lib/recorder';
+import { transcribe } from '../lib/nvidiaTools';
+
+/** Dengar lewat NVIDIA Whisper: rekam sampai hening ±1,4 detik setelah bicara, lalu transkripsi. */
+async function startNvidiaListening(settings, { onStart, onPartial, onEnd, onError }) {
+  let spoke = false;
+  let quietSince = 0;
+  let stopped = false;
+  let rec = null;
+  const finish = async () => {
+    if (stopped) return;
+    stopped = true;
+    const r = await rec.stop();
+    if (!r || r.seconds < 0.5 || !spoke) {
+      onEnd('');
+      return;
+    }
+    onPartial('(mentranskripsi…)');
+    try {
+      const lang = (settings.voice.lang || 'id-ID').split('-')[0];
+      const text = await transcribe(settings.keys.nvidia, { wavBase64: r.wavBase64, sampleRate: r.sampleRate, language: lang });
+      onPartial(text);
+      onEnd(text);
+    } catch (e) {
+      onError(Object.assign(e, { code: e.code || 'unknown' }));
+      onEnd('');
+    }
+  };
+  rec = await startRecording({
+    maxMs: 60_000,
+    onAutoStop: finish,
+    onLevel: (lv) => {
+      const now = Date.now();
+      if (lv > 0.12) {
+        spoke = true;
+        quietSince = 0;
+      } else if (spoke) {
+        if (!quietSince) quietSince = now;
+        else if (now - quietSince > 1400) finish();
+      }
+    },
+  });
+  onStart();
+  return async () => finish();
+}
 
 /**
  * Mode suara (bukan audio realtime):
@@ -33,6 +77,7 @@ const ORB = { listening: 'listening', processing: 'thinking', speaking: 'speakin
 
 export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
   const { settings } = useApp();
+  const nvidia = usesNvidiaVoice(settings);
   const [state, setState] = useState('idle');
   const [muted, setMuted] = useState(false);
   const [heard, setHeard] = useState('');
@@ -72,7 +117,8 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
     setHint('');
     setState('requesting_permission');
     try {
-      stopRef.current = await startListening({
+      const listenFn = nvidia ? (o) => startNvidiaListening(settings, o) : startListening;
+      stopRef.current = await listenFn({
         lang: settings.voice.lang,
         onStart: () => {
           if (turn === turnRef.current && activeRef.current) setState('listening');
@@ -106,7 +152,7 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
             if (spoken) {
               setState('speaking');
               try {
-                await speak(spoken, settings.voice);
+                await speak(spoken, settings);
               } catch (e) {
                 if (turn === turnRef.current) setHint(`Tidak bisa membacakan jawaban: ${e.message}`);
               }
@@ -127,7 +173,7 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
       setState(voiceErrorCode(e) === 'permission' || voiceErrorCode(e) === 'unavailable' ? 'error' : 'idle');
       if (voiceErrorCode(e) !== 'permission' && voiceErrorCode(e) !== 'unavailable') setHint(voiceErrorMessage(e));
     }
-  }, [settings.voice, onUtterance]);
+  }, [settings, nvidia, onUtterance]);
 
   const end = useCallback(
     async (label = 'ended') => {
@@ -154,7 +200,7 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
     voiceCapabilities().then((c) => {
       if (cancelled) return;
       setCaps(c);
-      if (!c.stt) {
+      if (!c.stt && !nvidia) {
         setError(voiceErrorMessage({ code: 'unavailable' }));
         setState('error');
       } else listen();
@@ -226,7 +272,7 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
         <button type="button" className="icon-btn" onClick={() => end('idle')} aria-label="Kembali ke chat">
           <MessageSquare size={24} />
         </button>
-        <span className="voice-badge">Suara HP + model teks</span>
+        <span className="voice-badge">{nvidia ? 'Suara NVIDIA + model teks' : 'Suara HP + model teks'}</span>
         <button type="button" className="icon-btn" onClick={() => setShowInfo((v) => !v)} aria-label="Tentang mode suara">
           <Info size={24} />
         </button>
@@ -235,8 +281,10 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
       <div className="voice-center">
         {showInfo && (
           <div className="voice-info">
-            Suaramu diubah jadi teks oleh pengenal suara di perangkat, dijawab model teks pilihanmu, lalu dibacakan oleh suara perangkat. Ini bukan
-            percakapan audio realtime, jadi ada jeda sebentar di setiap giliran.
+            {nvidia
+              ? 'Suaramu direkam lalu diubah jadi teks oleh NVIDIA Whisper, dijawab model teks pilihanmu, lalu dibacakan suara NVIDIA. '
+              : 'Suaramu diubah jadi teks oleh pengenal suara di perangkat, dijawab model teks pilihanmu, lalu dibacakan oleh suara perangkat. '}
+            Ini bukan percakapan audio realtime, jadi ada jeda sebentar di setiap giliran.
             {caps && (
               <div className="voice-caps">
                 Dikte: {caps.stt ? 'tersedia' : 'tidak tersedia'} · Membacakan: {caps.tts ? 'tersedia' : 'tidak tersedia'}

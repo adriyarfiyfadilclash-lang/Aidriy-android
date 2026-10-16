@@ -14,7 +14,7 @@ import { searchImages } from '../lib/search/imageSearch';
 import { imageQueryFromText } from '../lib/search/intent';
 import { attachmentMeta, fileToAttachment, imageFromBase64 } from '../lib/files';
 import { takePhoto, tap } from '../lib/native';
-import { ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet, TopBar } from '../components/ui';
+import { ChoiceDialog, ConfirmDialog, Group, IconButton, PromptDialog, Row, Sheet, TopBar } from '../components/ui';
 import { LogoMark } from '../components/Logo';
 import Composer from '../components/Composer';
 import Message from '../components/Message';
@@ -22,6 +22,7 @@ import AttachSheet from '../components/AttachSheet';
 import ModelPicker from '../components/ModelPicker';
 import CanvasView from '../components/CanvasView';
 import VoiceMode from '../components/VoiceMode';
+import { generateImage, readText, translate, languageLabel, LANGUAGES, IMAGE_MODELS, NvidiaToolError } from '../lib/nvidiaTools';
 import ProjectPicker from '../components/ProjectPicker';
 import ShareChatSheet, { shareOrCopy } from '../components/ShareChatSheet';
 import { canvasSize } from '../components/CanvasBlock';
@@ -100,6 +101,9 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
   const [webSearch, setWebSearch] = useState(settings.webSearch);
+  const [tool, setTool] = useState(null); // { type: 'image'|'ocr'|'translate', target? }
+  const toolRef = useRef(tool);
+  toolRef.current = tool;
   const [newProjectId, setNewProjectId] = useState(searchParams.get('project'));
   const [sheet, setSheet] = useState(null); // attach | model | menu | project | rename | delete
   const [canvasOpen, setCanvasOpen] = useState(null); // { id } | { localId }
@@ -264,7 +268,10 @@ export default function ChatPage() {
     list
       .filter((m) => !m.error || m.content)
       .map((m) => {
-        if (m.role === 'assistant') return { role: 'assistant', text: collapseArtifacts(extractMemories(m.content || '').clean) };
+        if (m.role === 'assistant') {
+          if (m.meta?.genImage) return { role: 'assistant', text: `[Gambar sudah dibuat dengan ${m.meta.genImage.modelLabel || 'FLUX'} dari deskripsi: "${m.meta.genImage.prompt}"]` };
+          return { role: 'assistant', text: collapseArtifacts(extractMemories(m.content || '').clean) };
+        }
         const atts = (m.attachments || []).map((meta) => {
           const full = cacheRef.current.get(meta.id);
           if (full) return full;
@@ -630,14 +637,122 @@ export default function ChatPage() {
     return clean;
   };
 
+  // ---------- Alat NVIDIA (gambar, OCR, terjemahan) ----------
+  const TOOL_STATUS = { image: 'Membuat gambar dengan NVIDIA FLUX…', ocr: 'Membaca teks dengan NVIDIA OCR…', translate: 'Menerjemahkan dengan NVIDIA Riva…' };
+  const runTool = async (convId, toolSpec, userMsg, fullAtts, beforeSave, opts = {}) => {
+    const key = settings.keys.nvidia;
+    const tempId = `ai-${Date.now()}`;
+    const parentId = opts.parentId || null;
+    const version = opts.version || 1;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setMessages((prev) => [
+      ...prev.map((m) => (m.role === 'assistant' && parentId && groupKey(m) === parentId && m._sel ? { ...m, _sel: false } : m)),
+      { id: tempId, role: 'assistant', content: '', streaming: true, status: TOOL_STATUS[toolSpec.type], meta: {}, parent_id: parentId, version, _sel: true },
+    ]);
+    stickRef.current = true;
+    let content = '';
+    let meta = { provider: 'nvidia', tool: toolSpec.type };
+    let error = '';
+    let errorInfo = null;
+    try {
+      if (toolSpec.type === 'image') {
+        const model = IMAGE_MODELS.find((m) => m.id === settings.imageModel) || IMAGE_MODELS[0];
+        const r = await generateImage(key, { prompt: userMsg.content, model: model.id, signal: controller.signal });
+        const b64 = r.dataUrl.slice(r.dataUrl.indexOf(',') + 1);
+        const mime = r.dataUrl.slice(5, r.dataUrl.indexOf(';'));
+        let path = null;
+        if (!incognito && convId) {
+          try {
+            path = await db.uploadAttachment(uid, convId, { name: `gambar-${r.seed}.${mime.includes('png') ? 'png' : 'jpg'}`, mime, data: b64 });
+          } catch {
+            /* tampilkan dari memori saja */
+          }
+        }
+        meta = { ...meta, model: model.label, genImage: { path, dataUrl: path ? undefined : r.dataUrl, prompt: userMsg.content, seed: r.seed, model: model.id, modelLabel: model.label } };
+        content = '';
+        // tampilkan langsung dari memori meski sudah diunggah
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, meta: { ...meta, genImage: { ...meta.genImage, dataUrl: r.dataUrl } } } : m)));
+      } else if (toolSpec.type === 'ocr') {
+        const images = fullAtts.filter((a) => a.kind === 'image' && a.data);
+        if (!images.length) throw new NvidiaToolError('Lampirkan foto atau gambar dokumen dulu, lalu kirim.', 'input');
+        const results = await readText(key, images, { signal: controller.signal });
+        content = results
+          .map((r) => `${results.length > 1 ? `**${r.name}**\n\n` : ''}${r.text ? '```text\n' + r.text + '\n```' : '_Tidak ada teks yang terbaca di gambar ini._'}`)
+          .join('\n\n');
+        if (userMsg.content) content = `${content}\n\n_Catatan: OCR hanya membaca teks. Untuk pertanyaan tentang isinya ("${userMsg.content.slice(0, 80)}"), matikan alat lalu tanya di chat._`;
+        meta = { ...meta, model: 'NVIDIA OCR' };
+      } else if (toolSpec.type === 'translate') {
+        if (!userMsg.content) throw new NvidiaToolError('Tulis teks yang mau diterjemahkan.', 'input');
+        const r = await translate(key, { text: userMsg.content, target: toolSpec.target || 'en', signal: controller.signal });
+        content = r.text;
+        meta = { ...meta, model: 'Riva Translate', translate: { source: r.source, target: r.target, via: r.via } };
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        error = e.message || 'Alat NVIDIA gagal';
+        if (e.code === 'credits') errorInfo = { kind: 'credits', provider: 'nvidia', detail: '' };
+      }
+    } finally {
+      abortRef.current = null;
+    }
+    if (opts.regen && (error || controller.signal.aborted)) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId).map((m) => (opts.prevSelId && m.id === opts.prevSelId ? { ...m, _sel: true } : m)));
+      if (error) showToast(`Gagal: ${error}`, 'error');
+      return '';
+    }
+    setMessages((prev) =>
+      prev.map((m) => (m.id === tempId ? { ...m, content, streaming: false, status: '', error, errorInfo, meta: m.meta?.genImage ? { ...meta, genImage: m.meta.genImage } : meta } : m))
+    );
+    if (!error && !incognito && convId && (content || meta.genImage)) {
+      try {
+        const realParent = (await beforeSave) || parentId;
+        const row = { conversation_id: convId, role: 'assistant', content, meta, version };
+        if (realParent && !String(realParent).startsWith('u-')) row.parent_id = realParent;
+        const saved = await db.insertMessage(row);
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: saved.id, parent_id: saved.parent_id || m.parent_id } : m)));
+        refreshConversations();
+      } catch (e) {
+        showToast(`Gagal menyimpan: ${e.message}`, 'error');
+      }
+    }
+    return content || (meta.genImage ? 'Gambar sudah dibuat.' : '');
+  };
+
+  const chooseTool = (type) => {
+    tap();
+    setSheet(null);
+    if (!settings.keys.nvidia) {
+      showToast('Tambahkan API key NVIDIA dulu di Kunci API', 'error');
+      navigate('/settings/keys');
+      return;
+    }
+    if (incognito && type === 'image') showToast('Di chat incognito, gambar tidak disimpan.');
+    setTool((t) => (t?.type === type ? null : { type, target: settings.translateTarget || 'en' }));
+  };
+
   // ---------- Kirim ----------
   const send = useCallback(
     async (rawText) => {
       const text = (rawText || '').trim();
       const atts = attachmentsRef.current;
       if ((!text && !atts.length) || busyRef.current) return '';
+      const activeTool = toolRef.current;
+      if (activeTool && !settings.keys.nvidia) {
+        showToast('Tambahkan API key NVIDIA dulu', 'error');
+        navigate('/settings/keys');
+        return '';
+      }
+      if (activeTool?.type === 'image' && !text) {
+        showToast('Tulis deskripsi gambar yang mau dibuat.');
+        return '';
+      }
+      if (activeTool?.type === 'ocr' && !atts.some((a) => a.kind === 'image')) {
+        showToast('Lampirkan foto/gambar dokumen dulu (tombol +).');
+        return '';
+      }
       const provider = settings.provider;
-      if (!settings.keys[provider]) {
+      if (!activeTool && !settings.keys[provider]) {
         showToast(`Tambahkan API key ${PROVIDERS[provider].short} dulu`, 'error');
         navigate('/settings/keys');
         return '';
@@ -653,6 +768,7 @@ export default function ChatPage() {
         role: 'user',
         content: text,
         attachments: atts.map((a) => attachmentMeta(a)),
+        meta: activeTool ? { tool: activeTool } : undefined,
       };
       let convId = convRef.current?.id;
       try {
@@ -696,7 +812,9 @@ export default function ChatPage() {
             }
             metas.push(attachmentMeta(a, path));
           }
-          const saved = await db.insertMessage({ conversation_id: convId, role: 'user', content: text, attachments: metas });
+          const urow = { conversation_id: convId, role: 'user', content: text, attachments: metas };
+          if (activeTool) urow.meta = { tool: activeTool };
+          const saved = await db.insertMessage(urow);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === userMsg.id ? { ...m, id: saved.id, attachments: metas } : m.parent_id === userMsg.id ? { ...m, parent_id: saved.id } : m
@@ -710,6 +828,7 @@ export default function ChatPage() {
       }
 
       try {
+        if (activeTool) return await runTool(convId, activeTool, userMsg, atts, saveUser, { parentId: userMsg.id });
         return await runAssistant(convId, history, saveUser, { parentId: userMsg.id });
       } finally {
         busyRef.current = false;
@@ -723,16 +842,11 @@ export default function ChatPage() {
   // Buat ulang: jawaban lama disimpan sebagai versi, jawaban baru jadi versi berikutnya.
   const regenerate = async () => {
     if (busyRef.current) return;
-    if (!settings.keys[settings.provider]) {
-      showToast('Tambahkan API key dulu', 'error');
-      navigate('/settings/keys');
-      return;
-    }
     let all = [...messagesRef.current];
     let vis = computeVisible(all).list;
     const tail = vis[vis.length - 1];
     // Jawaban gagal yang tidak tersimpan dibuang (bukan versi).
-    if (tail?.role === 'assistant' && String(tail.id).startsWith('ai-') && !tail.content) {
+    if (tail?.role === 'assistant' && String(tail.id).startsWith('ai-') && !tail.content && !tail.meta?.genImage) {
       all = all.filter((m) => m.id !== tail.id);
       vis = computeVisible(all).list;
     }
@@ -744,6 +858,13 @@ export default function ChatPage() {
       all = all.map((m) => (m.id === lastA.id ? { ...m, parent_id: userM.id } : m));
       if (!String(lastA.id).startsWith('ai-') && !String(userM.id).startsWith('u-')) db.updateMessage(lastA.id, { parent_id: userM.id }).catch(() => {});
     }
+    const toolSpec = userM.meta?.tool;
+    const needKey = toolSpec ? 'nvidia' : settings.provider;
+    if (!settings.keys[needKey]) {
+      showToast('Tambahkan API key dulu', 'error');
+      navigate('/settings/keys');
+      return;
+    }
     const siblings = all.filter((m) => m.role === 'assistant' && groupKey(m) === userM.id);
     const version = siblings.reduce((mx, m) => Math.max(mx, m.version || 1), 0) + 1;
     messagesRef.current = all;
@@ -752,12 +873,13 @@ export default function ChatPage() {
     busyRef.current = true;
     setBusy(true);
     try {
-      await runAssistant(convRef.current?.id, history, Promise.resolve(null), {
-        parentId: userM.id,
-        version,
-        regen: !!lastA,
-        prevSelId: lastA?.id,
-      });
+      const ropts = { parentId: userM.id, version, regen: !!lastA, prevSelId: lastA?.id };
+      if (toolSpec) {
+        const fullAtts = (userM.attachments || []).map((a) => cacheRef.current.get(a.id)).filter(Boolean);
+        await runTool(convRef.current?.id, toolSpec, userM, fullAtts, Promise.resolve(null), ropts);
+      } else {
+        await runAssistant(convRef.current?.id, history, Promise.resolve(null), ropts);
+      }
     } catch {
       /* sudah ditampilkan */
     } finally {
@@ -1028,7 +1150,7 @@ export default function ChatPage() {
                   onPickModel={openModelPicker}
                   canvasRows={rowsForRender}
                   latestCanvas={latestCanvas}
-                  voice={settings.voice}
+                  voice={settings}
                 />
               );
             })}
@@ -1065,7 +1187,23 @@ export default function ChatPage() {
             }
             setVoiceOpen(true);
           }}
-          placeholder={incognito ? 'Chat rahasia dengan A.I.DRIY…' : 'Chat dengan A.I.DRIY…'}
+          placeholder={
+            tool?.type === 'image'
+              ? 'Deskripsikan gambar yang mau dibuat…'
+              : tool?.type === 'ocr'
+                ? 'Lampirkan foto lalu kirim…'
+                : tool?.type === 'translate'
+                  ? 'Tulis teks yang mau diterjemahkan…'
+                  : incognito
+                    ? 'Chat rahasia dengan A.I.DRIY…'
+                    : 'Chat dengan A.I.DRIY…'
+          }
+          tool={tool}
+          onClearTool={() => {
+            tap();
+            setTool(null);
+          }}
+          onPickLanguage={() => setSheet('lang')}
         />
       </div>
       </div>
@@ -1089,6 +1227,9 @@ export default function ChatPage() {
         onWebSearch={setWebSearch}
         projectName={project?.name}
         onPickProject={incognito ? undefined : () => setSheet('project')}
+        onTool={chooseTool}
+        nvidiaReady={!!settings.keys.nvidia}
+        activeTool={tool?.type}
       />
       <ModelPicker open={sheet === 'model'} onClose={() => setSheet(null)} />
 
@@ -1116,6 +1257,17 @@ export default function ChatPage() {
       </Sheet>
 
       <ProjectPicker open={sheet === 'project'} onClose={() => setSheet(null)} currentId={project?.id || null} onPick={chooseProject} title="Pilih proyek" />
+      <ChoiceDialog
+        open={sheet === 'lang'}
+        onClose={() => setSheet(null)}
+        title="Terjemahkan ke"
+        value={tool?.target}
+        options={LANGUAGES.map((l) => ({ value: l.id, label: l.label }))}
+        onChange={(v) => {
+          setTool((t) => (t ? { ...t, target: v } : t));
+          app.setSettings({ translateTarget: v });
+        }}
+      />
       <ShareChatSheet open={sheet === 'share'} onClose={() => setSheet(null)} title={conv?.title} messages={visible.list} />
 
       <PromptDialog

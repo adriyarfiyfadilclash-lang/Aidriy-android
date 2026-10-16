@@ -63,7 +63,6 @@ function friendly(msg) {
 // ---------- Buat gambar ----------
 export const IMAGE_MODELS = [
   { id: 'flux.2-klein-4b', label: 'FLUX.2 klein 4B', steps: 4 },
-  { id: 'flux.1-schnell', label: 'FLUX.1 schnell', steps: 4 },
 ];
 
 /** @returns {Promise<{dataUrl:string, seed:number, model:string}>} */

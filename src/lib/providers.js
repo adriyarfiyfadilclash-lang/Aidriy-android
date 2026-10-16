@@ -62,11 +62,10 @@ export const PROVIDERS = {
     viaRelay: true,
     models: [
       { id: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B' },
-      { id: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash' },
-      { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
       { id: 'nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning 30B' },
       { id: 'nvidia/nemotron-3.5-super-vl-120b-a12b', label: 'Nemotron 3.5 Super VL (gambar)' },
-      { id: 'stepfun-ai/step-5-preview', label: 'Step 5 Preview' },
+      { id: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash' },
+      { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
     ],
   },
 };

@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
 import { ArrowDown, ArrowLeft, Bookmark, BookmarkCheck, ChevronDown, ChevronUp, FolderClosed, Ghost, MoreVertical, Paperclip, Pencil, Search, Share2, SquarePen, Trash2, X } from 'lucide-react';
 import { useApp } from '../state';
 import * as db from '../lib/db';
-import { PROVIDERS, effortLabel, shortModelName, streamChat } from '../lib/providers';
+import { effortLabel, getProvider, providerReady, shortModelName, streamChat } from '../lib/providers';
 import { buildSystemPrompt } from '../lib/prompt';
 import { collapseArtifacts, extractMemories, imageQueries, plainText, splitSegments } from '../lib/parse';
 import * as canvasDb from '../lib/canvas';
@@ -474,7 +474,7 @@ export default function ChatPage() {
   const runAssistantInner = async (convId, historyList, beforeSave, opts = {}) => {
     const provider = settings.provider;
     const model = settings.model;
-    const apiKey = settings.keys[provider];
+    const apiKey = settings.keys[provider] || '';
     const tempId = `ai-${Date.now()}`;
     const parentId = opts.parentId || null;
     const version = opts.version || 1;
@@ -854,8 +854,8 @@ export default function ChatPage() {
         return '';
       }
       const provider = settings.provider;
-      if (!activeTool && !settings.keys[provider]) {
-        showToast(`Tambahkan API key ${PROVIDERS[provider].short} dulu`, 'error');
+      if (!activeTool && !providerReady(settings, provider)) {
+        showToast(`Tambahkan API key ${getProvider(provider)?.short || ''} dulu`, 'error');
         navigate('/settings/keys');
         return '';
       }
@@ -962,7 +962,7 @@ export default function ChatPage() {
     }
     const toolSpec = userM.meta?.tool;
     const needKey = toolSpec ? 'nvidia' : settings.provider;
-    if (!settings.keys[needKey]) {
+    if (!providerReady(settings, needKey)) {
       showToast('Tambahkan API key dulu', 'error');
       navigate('/settings/keys');
       return;
@@ -1018,8 +1018,8 @@ export default function ChatPage() {
     }
     // Lanjutkan dari bagian terakhir
     const provider = settings.provider;
-    if (!settings.keys[provider]) {
-      showToast(`Tambahkan API key ${PROVIDERS[provider].short} dulu`, 'error');
+    if (!providerReady(settings, provider)) {
+      showToast(`Tambahkan API key ${getProvider(provider)?.short || ''} dulu`, 'error');
       navigate('/settings/keys');
       return;
     }
@@ -1427,7 +1427,7 @@ export default function ChatPage() {
           }}
           onVoiceMode={() => {
             tap('medium');
-            if (!settings.keys[settings.provider]) {
+            if (!providerReady(settings, settings.provider)) {
               showToast('Tambahkan API key dulu', 'error');
               navigate('/settings/keys');
               return;

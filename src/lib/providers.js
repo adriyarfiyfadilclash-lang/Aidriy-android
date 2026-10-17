@@ -82,6 +82,12 @@ export function effortLabel(id) {
 
 export function modelsFor(provider, cache) {
   const fetched = cache?.[provider];
+  if (isCustomProvider(provider)) {
+    // Model yang ditulis manual selalu tampil di atas, lalu hasil muat dari endpoint.
+    const manual = customEndpoint(provider)?.models || [];
+    const ids = new Set(manual.map((m) => m.id));
+    return [...manual, ...(fetched || []).filter((m) => !ids.has(m.id))];
+  }
   if (fetched && fetched.length) return fetched;
   return PROVIDERS[provider]?.models || [];
 }
@@ -96,6 +102,7 @@ export function shortModelName(provider, model, cache) {
 
 // ---------- Daftar model langsung dari penyedia ----------
 export async function fetchModels(provider, key) {
+  if (isCustomProvider(provider)) return fetchCustomModels(provider, key);
   if (provider === 'anthropic') {
     const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
       headers: anthropicHeaders(key),
@@ -634,6 +641,47 @@ function nvidiaMessages(system, history, vision) {
   return msgs;
 }
 
+/** Sebagian model menulis proses berpikir di dalam <think>…</think> pada teks jawaban: pisahkan. */
+function thinkSplitter(cb) {
+  let inThink = false;
+  let pending = '';
+  const push = (chunk) => {
+    pending += chunk;
+    for (;;) {
+      if (inThink) {
+        const end = pending.indexOf('</think>');
+        if (end < 0) {
+          if (pending.length > 8) {
+            cb.onThinking(pending.slice(0, -8));
+            pending = pending.slice(-8);
+          }
+          return;
+        }
+        cb.onThinking(pending.slice(0, end));
+        pending = pending.slice(end + 8).replace(/^\s+/, '');
+        inThink = false;
+      } else {
+        const start = pending.indexOf('<think>');
+        if (start < 0) {
+          const keep = pending.lastIndexOf('<');
+          const safe = keep >= 0 && pending.length - keep < 7 ? keep : pending.length;
+          if (safe) cb.onText(pending.slice(0, safe));
+          pending = pending.slice(safe);
+          return;
+        }
+        if (start) cb.onText(pending.slice(0, start));
+        pending = pending.slice(start + 7);
+        inThink = true;
+      }
+    }
+  };
+  const flush = () => {
+    if (pending) (inThink ? cb.onThinking : cb.onText)(pending);
+    pending = '';
+  };
+  return { push, flush };
+}
+
 let nvidiaSearchNoted = false;
 
 async function streamNvidia(o, cb) {
@@ -665,39 +713,8 @@ async function streamNvidia(o, cb) {
   }
   await ensureOk(res);
   const usage = { input: 0, output: 0 };
-  // Sebagian model menulis proses berpikir di dalam <think>…</think> pada teks jawaban.
-  let inThink = false;
-  let pending = '';
-  const emit = (chunk) => {
-    pending += chunk;
-    for (;;) {
-      if (inThink) {
-        const end = pending.indexOf('</think>');
-        if (end < 0) {
-          if (pending.length > 8) {
-            cb.onThinking(pending.slice(0, -8));
-            pending = pending.slice(-8);
-          }
-          return;
-        }
-        cb.onThinking(pending.slice(0, end));
-        pending = pending.slice(end + 8).replace(/^\s+/, '');
-        inThink = false;
-      } else {
-        const start = pending.indexOf('<think>');
-        if (start < 0) {
-          const keep = pending.lastIndexOf('<');
-          const safe = keep >= 0 && pending.length - keep < 7 ? keep : pending.length;
-          if (safe) cb.onText(pending.slice(0, safe));
-          pending = pending.slice(safe);
-          return;
-        }
-        if (start) cb.onText(pending.slice(0, start));
-        pending = pending.slice(start + 7);
-        inThink = true;
-      }
-    }
-  };
+  const think = thinkSplitter(cb);
+  const emit = think.push;
   for await (const ev of sseEvents(res)) {
     if (ev.error) throw streamError(ev.error.message || ev.error, 'Terjadi kesalahan dari NVIDIA');
     const d = ev.choices?.[0]?.delta;
@@ -709,8 +726,305 @@ async function streamNvidia(o, cb) {
       usage.output = ev.usage.completion_tokens || 0;
     }
   }
-  if (pending) (inThink ? cb.onThinking : cb.onText)(pending);
+  think.flush();
   return { usage };
+}
+
+// ---------- Endpoint kustom (manual) ----------
+// Pengguna bisa menambah endpoint sendiri: alamat dasar API, API key, dan ID model.
+// Format yang didukung: kompatibel OpenAI (/chat/completions) dan kompatibel Anthropic (/messages).
+// Bila endpoint tidak mengizinkan panggilan langsung dari aplikasi (CORS), otomatis lewat relay.
+
+export const CUSTOM_PRESETS = [
+  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', keyUrl: 'https://platform.deepseek.com/api_keys' },
+  { name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', keyUrl: 'https://console.groq.com/keys' },
+  { name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', keyUrl: 'https://console.mistral.ai/api-keys' },
+  { name: 'xAI (Grok)', baseUrl: 'https://api.x.ai/v1', keyUrl: 'https://console.x.ai' },
+  { name: 'Together', baseUrl: 'https://api.together.xyz/v1', keyUrl: 'https://api.together.ai/settings/api-keys' },
+  { name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', keyUrl: 'https://cloud.cerebras.ai' },
+  { name: 'Fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', keyUrl: 'https://fireworks.ai/account/api-keys' },
+  { name: 'Moonshot (Kimi)', baseUrl: 'https://api.moonshot.ai/v1', keyUrl: 'https://platform.moonshot.ai/console/api-keys' },
+  { name: 'Qwen (DashScope)', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', keyUrl: 'https://modelstudio.console.alibabacloud.com' },
+];
+
+let customEndpoints = [];
+const relayNeeded = new Set(); // endpoint yang ternyata menolak panggilan langsung (CORS)
+
+export function setCustomEndpoints(list) {
+  customEndpoints = Array.isArray(list) ? list.filter((e) => e && e.id && e.baseUrl) : [];
+}
+
+export const isCustomProvider = (id) => typeof id === 'string' && id.startsWith('custom:');
+
+export function customEndpoint(id) {
+  return isCustomProvider(id) ? customEndpoints.find((e) => `custom:${e.id}` === id) || null : null;
+}
+
+/** Info penyedia, termasuk endpoint kustom. */
+export function getProvider(id) {
+  if (PROVIDERS[id]) return PROVIDERS[id];
+  if (!isCustomProvider(id)) return undefined;
+  const e = customEndpoint(id);
+  if (!e) return { name: 'Endpoint kustom (sudah dihapus)', short: 'Kustom', models: [], custom: true, missing: true };
+  return { name: e.name || 'Endpoint kustom', short: e.name || 'Kustom', models: e.models || [], custom: true, endpoint: e, keyUrl: e.keyUrl };
+}
+
+/** Semua penyedia: bawaan lalu endpoint kustom, sebagai [id, info]. */
+export function providerEntries() {
+  return [...Object.entries(PROVIDERS), ...customEndpoints.map((e) => [`custom:${e.id}`, getProvider(`custom:${e.id}`)])];
+}
+
+/** Apakah penyedia siap dipakai (punya key, atau endpoint kustom tanpa key). */
+export function providerReady(settings, id) {
+  if (isCustomProvider(id)) {
+    const e = customEndpoint(id);
+    return !!e && (!!settings.keys?.[id] || !!e.noKey);
+  }
+  return !!settings.keys?.[id];
+}
+
+/** Normalisasi alamat dasar: buang garis miring & jalur akhir yang ikut ditempel. */
+export function normalizeBaseUrl(url) {
+  let u = String(url || '').trim();
+  if (u && !/^https?:\/\//i.test(u)) u = `https://${u}`;
+  u = u.replace(/\/+$/, '').replace(/\/(chat\/completions|completions|messages|models)$/i, '');
+  return u;
+}
+
+export function validateBaseUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'Alamat endpoint tidak valid. Contoh: https://api.deepseek.com/v1';
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return 'Alamat harus diawali https://';
+  return '';
+}
+
+function customAuthHeaders(e, key) {
+  const h = {};
+  if (!key) return h;
+  const style = e.authStyle || (e.format === 'anthropic' ? 'x-api-key' : 'bearer');
+  if (style === 'x-api-key') h['x-api-key'] = key;
+  else if (style === 'api-key') h['api-key'] = key;
+  else h.Authorization = `Bearer ${key}`;
+  return h;
+}
+
+async function relayFetch(e, key, url, init) {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new ProviderError('Masuk ke akun A.I.DRIY dulu untuk memakai relay endpoint kustom.', 401, 'auth');
+  const extra = {};
+  if (init.headers?.['anthropic-version']) extra['x-upstream-anthropic-version'] = init.headers['anthropic-version'];
+  try {
+    return await fetch(`${SUPABASE_URL}/functions/v1/custom-proxy`, {
+      method: init.method || 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: SUPABASE_KEY_PUBLIC,
+        'x-target-url': url,
+        'x-provider-key': key || '',
+        'x-auth-style': key ? e.authStyle || (e.format === 'anthropic' ? 'x-api-key' : 'bearer') : 'none',
+        ...extra,
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+      },
+      body: init.body,
+      signal: init.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    throw new ProviderError('Tidak bisa terhubung ke relay A.I.DRIY. Periksa koneksi internet.');
+  }
+}
+
+/** Panggil endpoint kustom: langsung bila bisa, lewat relay bila endpoint menolak panggilan dari aplikasi. */
+async function customFetch(e, key, path, init = {}) {
+  const url = `${normalizeBaseUrl(e.baseUrl)}/${path}`;
+  const mode = e.connection || 'auto'; // auto | direct | relay
+  if (mode === 'relay' || (mode === 'auto' && relayNeeded.has(e.id))) return relayFetch(e, key, url, init);
+  try {
+    return await fetch(url, { ...init, headers: { ...customAuthHeaders(e, key), ...(init.headers || {}) } });
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    if (mode === 'direct') {
+      throw new ProviderError(`Tidak bisa terhubung ke ${e.name || 'endpoint'} (${new URL(url).host}). Periksa alamat & koneksi, atau ubah jalur koneksi ke "Lewat relay".`);
+    }
+    // Biasanya CORS: endpoint tidak menerima panggilan langsung dari aplikasi → lewat relay.
+    relayNeeded.add(e.id);
+    return relayFetch(e, key, url, init);
+  }
+}
+
+function requireEndpoint(id) {
+  const e = customEndpoint(id);
+  if (!e) throw new ProviderError('Endpoint kustom ini sudah dihapus. Pilih model lain.', 0, 'auth');
+  return e;
+}
+
+async function fetchCustomModels(id, key) {
+  const e = requireEndpoint(id);
+  const res = await customFetch(e, key, 'models', {
+    headers: e.format === 'anthropic' ? { 'anthropic-version': '2023-06-01' } : {},
+  });
+  await ensureOk(res);
+  const j = await res.json().catch(() => ({}));
+  const list = Array.isArray(j) ? j : j.data || j.models || [];
+  return list
+    .map((m) => (typeof m === 'string' ? { id: m } : { id: m.id || m.name || m.model, label: m.display_name || m.name }))
+    .filter((m) => m.id)
+    .map((m) => ({ id: String(m.id).replace(/^models\//, ''), label: m.label && m.label !== m.id ? m.label : String(m.id).replace(/^models\//, '') }));
+}
+
+function customOpenAIMessages(system, history, withImages) {
+  const msgs = [];
+  if (system) msgs.push({ role: 'system', content: system });
+  for (const m of history) {
+    if (m.role === 'assistant') {
+      msgs.push({ role: 'assistant', content: m.text || '…' });
+      continue;
+    }
+    const texts = [];
+    const images = [];
+    for (const a of m.attachments || []) {
+      if (a.kind === 'text' && a.text) texts.push(textFile(a));
+      else if (a.kind === 'image' && a.data && withImages) images.push({ type: 'image_url', image_url: { url: dataUrl(a) } });
+      else if (a.kind === 'image' && a.data) texts.push(`[Gambar "${a.name}" dilampirkan, tetapi model ini tidak bisa melihat gambar.]`);
+      else if (a.kind === 'pdf') texts.push(`[PDF "${a.name}" tidak bisa dibaca lewat endpoint ini. Salin teksnya ke chat bila perlu.]`);
+      else texts.push(fileNote(a));
+    }
+    const text = [...texts, m.text].filter(Boolean).join('\n\n') || '…';
+    msgs.push({ role: 'user', content: images.length ? [...images, { type: 'text', text }] : text });
+  }
+  return msgs;
+}
+
+const customNoted = new Set();
+const noImageEndpoints = new Set();
+
+async function streamCustomOpenAI(e, o, cb) {
+  const hasImages = o.history.some((m) => (m.attachments || []).some((a) => a.kind === 'image' && a.data));
+  let withImages = hasImages && !noImageEndpoints.has(`${e.id}:${o.model}`);
+  const makeBody = () => {
+    const body = {
+      model: o.model,
+      messages: customOpenAIMessages(o.system, o.history, withImages),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    if (o.effort !== 'off') body.reasoning_effort = o.effort === 'high' ? 'high' : 'medium';
+    return body;
+  };
+  if (o.webSearch && !customNoted.has(e.id)) {
+    customNoted.add(e.id);
+    cb.onNotice(`Pencarian web tidak tersedia lewat ${e.name || 'endpoint kustom'}, jadi dijawab dari pengetahuan model.`);
+  }
+  const send = (body) =>
+    customFetch(e, o.apiKey, 'chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/event-stream, application/json' },
+      body: JSON.stringify(body),
+      signal: o.signal,
+    });
+  let body = makeBody();
+  let res = await send(body);
+  // Server yang ketat menolak opsi yang tidak dikenalnya (400): lepas satu per satu lalu coba lagi.
+  let droppedThinking = false;
+  if (res.status === 400 && body.reasoning_effort) {
+    delete body.reasoning_effort;
+    droppedThinking = true;
+    res = await send(body);
+  }
+  if (res.status === 400 && body.stream_options) {
+    delete body.stream_options;
+    res = await send(body);
+  }
+  if (res.status === 400 && withImages) {
+    // Model tidak menerima gambar: kirim ulang tanpa gambar dan beri tahu.
+    withImages = false;
+    noImageEndpoints.add(`${e.id}:${o.model}`);
+    body = { ...body, messages: customOpenAIMessages(o.system, o.history, false) };
+    res = await send(body);
+    if (res.ok) cb.onNotice('Model ini tidak menerima gambar, jadi gambar tidak ikut dikirim.');
+  }
+  if (res.ok && droppedThinking) cb.onNotice('Model ini tidak mendukung pengaturan tingkat berpikir, jadi dijawab dengan pengaturan bawaannya.');
+  await ensureOk(res);
+  const usage = { input: 0, output: 0 };
+  const ctype = res.headers.get('content-type') || '';
+  if (ctype.includes('application/json')) {
+    // Server mengabaikan stream: ambil jawaban utuh.
+    const j = await res.json();
+    if (j.error) throw streamError(j.error.message || j.error, 'Terjadi kesalahan dari endpoint');
+    const msg = j.choices?.[0]?.message || {};
+    if (msg.reasoning_content || msg.reasoning) cb.onThinking(msg.reasoning_content || msg.reasoning);
+    const think = thinkSplitter(cb);
+    think.push(msg.content || '');
+    think.flush();
+    usage.input = j.usage?.prompt_tokens || 0;
+    usage.output = j.usage?.completion_tokens || 0;
+    return { usage };
+  }
+  const think = thinkSplitter(cb);
+  for await (const ev of sseEvents(res)) {
+    if (ev.error) throw streamError(ev.error.message || ev.error, `Terjadi kesalahan dari ${e.name || 'endpoint'}`);
+    const d = ev.choices?.[0]?.delta;
+    const thought = d?.reasoning_content || d?.reasoning;
+    if (thought) cb.onThinking(thought);
+    if (d?.content) think.push(d.content);
+    if (ev.usage) {
+      usage.input = ev.usage.prompt_tokens || 0;
+      usage.output = ev.usage.completion_tokens || 0;
+    }
+  }
+  think.flush();
+  return { usage };
+}
+
+async function streamCustomAnthropic(e, o, cb) {
+  const body = { model: o.model, max_tokens: 8192, system: o.system, messages: anthropicMessages(o.history), stream: true };
+  if (o.effort !== 'off') {
+    const budget = o.effort === 'high' ? 16000 : 5000;
+    body.thinking = { type: 'enabled', budget_tokens: budget };
+    body.max_tokens = budget + 12000;
+  }
+  if (o.webSearch && !customNoted.has(e.id)) {
+    customNoted.add(e.id);
+    cb.onNotice(`Pencarian web tidak tersedia lewat ${e.name || 'endpoint kustom'}, jadi dijawab dari pengetahuan model.`);
+  }
+  const res = await customFetch(e, o.apiKey, 'messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+    body: JSON.stringify(body),
+    signal: o.signal,
+  });
+  await ensureOk(res);
+  const usage = { input: 0, output: 0 };
+  for await (const ev of sseEvents(res)) {
+    if (ev.type === 'message_start') usage.input = ev.message?.usage?.input_tokens || 0;
+    else if (ev.type === 'content_block_delta') {
+      if (ev.delta?.type === 'text_delta') cb.onText(ev.delta.text);
+      else if (ev.delta?.type === 'thinking_delta') cb.onThinking(ev.delta.thinking);
+    } else if (ev.type === 'message_delta') {
+      if (ev.usage?.output_tokens) usage.output = ev.usage.output_tokens;
+    } else if (ev.type === 'error') throw streamError(ev.error?.message, `Terjadi kesalahan dari ${e.name || 'endpoint'}`);
+  }
+  return { usage };
+}
+
+function streamCustom(o, cb) {
+  const e = requireEndpoint(o.provider);
+  return e.format === 'anthropic' ? streamCustomAnthropic(e, o, cb) : streamCustomOpenAI(e, o, cb);
+}
+
+/** Uji endpoint dengan permintaan kecil sungguhan. Mengembalikan teks jawaban model. */
+export async function testCustomEndpoint(id, key, model, signal) {
+  let text = '';
+  await streamChat(
+    { provider: id, model, apiKey: key, system: 'Jawab sangat singkat.', history: [{ role: 'user', text: 'Balas dengan satu kata: OK' }], effort: 'off', webSearch: false, signal },
+    { onText: (t) => (text += t) }
+  );
+  return text.trim();
 }
 
 const STREAMERS = {
@@ -726,7 +1040,7 @@ const STREAMERS = {
  * Jika model menolak fitur tambahan (berpikir / pencarian web), dicoba ulang tanpa fitur itu.
  */
 export async function streamChat(opts, callbacks) {
-  const run = STREAMERS[opts.provider];
+  const run = isCustomProvider(opts.provider) ? streamCustom : STREAMERS[opts.provider];
   if (!run) throw new ProviderError('Penyedia tidak dikenal');
   const cb = {
     onText: () => {},

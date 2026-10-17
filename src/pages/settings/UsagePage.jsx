@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../../state';
 import * as db from '../../lib/db';
-import { PROVIDERS } from '../../lib/providers';
+import { getProvider } from '../../lib/providers';
 import { TopBar } from '../../components/ui';
 
 const fmt = (n) => new Intl.NumberFormat('id-ID').format(n || 0);
@@ -100,7 +100,7 @@ export default function UsagePage() {
             {Object.keys(data.byProv).length === 0 && <p className="muted pad">Belum ada pemakaian.</p>}
             {Object.entries(data.byProv).map(([p, v]) => (
               <div key={p} className="card">
-                <div className="card-title">{PROVIDERS[p]?.name || p}</div>
+                <div className="card-title">{getProvider(p)?.name || p}</div>
                 <div className="usage-row">
                   <span>Jawaban</span>
                   <b>{fmt(v.replies)}</b>

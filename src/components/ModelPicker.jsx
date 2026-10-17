@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, KeyRound, RefreshCw } from 'lucide-react';
+import { Check, KeyRound, Plus, RefreshCw } from 'lucide-react';
 import { useApp } from '../state';
-import { EFFORTS, PROVIDERS, fetchModels, modelsFor } from '../lib/providers';
+import { EFFORTS, fetchModels, getProvider, isCustomProvider, modelsFor, providerEntries, providerReady } from '../lib/providers';
 import { tap } from '../lib/native';
 import { Sheet } from './ui';
 
@@ -22,7 +22,9 @@ export default function ModelPicker({ open, onClose }) {
     }
   }, [open, settings.provider]);
 
-  const key = settings.keys[provider];
+  const key = settings.keys[provider] || '';
+  const ready = providerReady(settings, provider);
+  const info = getProvider(provider);
   const list = useMemo(() => {
     const all = modelsFor(provider, settings.modelCache);
     const t = q.trim().toLowerCase();
@@ -30,7 +32,7 @@ export default function ModelPicker({ open, onClose }) {
   }, [provider, settings.modelCache, q]);
 
   const refresh = async () => {
-    if (!key && provider !== 'openrouter') return;
+    if (!ready && provider !== 'openrouter') return;
     setLoading(true);
     try {
       const models = await fetchModels(provider, key);
@@ -52,18 +54,28 @@ export default function ModelPicker({ open, onClose }) {
   return (
     <Sheet open={open} onClose={onClose} title="Model AI" className="sheet-tall">
       <div className="chips-row">
-        {Object.entries(PROVIDERS).map(([id, p]) => (
+        {providerEntries().map(([id, p]) => (
           <button key={id} type="button" className={`chip ${provider === id ? 'on' : ''}`} onClick={() => setProvider(id)}>
             {p.short}
-            {settings.keys[id] ? '' : ' ·'}
+            {providerReady(settings, id) ? '' : ' ·'}
           </button>
         ))}
+        <button
+          type="button"
+          className="chip"
+          onClick={() => {
+            onClose();
+            navigate('/settings/keys', { state: { addCustom: true } });
+          }}
+        >
+          <Plus size={15} /> Endpoint
+        </button>
       </div>
 
-      {!key ? (
+      {!ready ? (
         <div className="card pad center">
           <KeyRound size={28} className="muted" />
-          <p>Belum ada API key untuk {PROVIDERS[provider].name}.</p>
+          <p>{info?.missing ? 'Endpoint kustom ini sudah dihapus.' : `Belum ada API key untuk ${info?.name || provider}.`}</p>
           <button
             type="button"
             className="btn btn-primary"
@@ -116,7 +128,11 @@ export default function ModelPicker({ open, onClose }) {
                 </button>
               );
             })}
-            {list.length === 0 && <p className="muted pad">Tidak ada model yang cocok.</p>}
+            {list.length === 0 && (
+              <p className="muted pad">
+                {isCustomProvider(provider) && !q.trim() ? 'Belum ada model. Tulis ID model di bawah, atau tekan tombol muat ulang untuk mengambil daftar dari endpoint.' : 'Tidak ada model yang cocok.'}
+              </p>
+            )}
           </div>
 
           <form
@@ -126,7 +142,7 @@ export default function ModelPicker({ open, onClose }) {
               if (custom.trim()) pick(custom.trim());
             }}
           >
-            <input className="input" placeholder="ID model lain, misal gemini-3-pro" value={custom} onChange={(e) => setCustom(e.target.value)} />
+            <input className="input" placeholder={isCustomProvider(provider) ? 'ID model, misal deepseek-chat' : 'ID model lain, misal gemini-3-pro'} value={custom} onChange={(e) => setCustom(e.target.value)} />
             <button type="submit" className="btn btn-primary">
               Pakai
             </button>

@@ -24,7 +24,7 @@ import GeneratedImage from './GeneratedImage';
 import { languageLabel } from '../lib/nvidiaTools';
 import { speakText, stopText } from '../lib/voice';
 import { useApp } from '../state';
-import { PROVIDERS } from '../lib/providers';
+import { getProvider } from '../lib/providers';
 import Markdown, { SourcesContext } from './Markdown';
 import ImageGallery from './ImageGallery';
 import Sources from './Sources';
@@ -176,9 +176,9 @@ function Message({
           <div className="error-body">
             {msg.errorInfo?.kind === 'credits' ? (
               <>
-                <div className="error-title">Kredit {PROVIDERS[msg.errorInfo.provider]?.short || 'API'} habis</div>
+                <div className="error-title">Kredit {getProvider(msg.errorInfo.provider)?.short || 'API'} habis</div>
                 <div>
-                  Saldo atau kuota API key {PROVIDERS[msg.errorInfo.provider]?.short || ''} kamu sudah habis, jadi penyedia menolak permintaan ini. Kredit API ditagih
+                  Saldo atau kuota API key {getProvider(msg.errorInfo.provider)?.short || ''} kamu sudah habis, jadi penyedia menolak permintaan ini. Kredit API ditagih
                   terpisah dari langganan aplikasi chat. Isi ulang kredit, atau ganti ke model dari penyedia lain yang key-nya masih aktif.
                 </div>
               </>
@@ -187,8 +187,8 @@ function Message({
             )}
             {msg.errorInfo?.detail && <div className="error-detail">{msg.errorInfo.detail}</div>}
             <div className="error-actions">
-              {msg.errorInfo?.kind === 'credits' && PROVIDERS[msg.errorInfo.provider]?.billingUrl && (
-                <button type="button" className="btn btn-dark small-btn" onClick={() => openExternal(PROVIDERS[msg.errorInfo.provider].billingUrl)}>
+              {msg.errorInfo?.kind === 'credits' && getProvider(msg.errorInfo.provider)?.billingUrl && (
+                <button type="button" className="btn btn-dark small-btn" onClick={() => openExternal(getProvider(msg.errorInfo.provider).billingUrl)}>
                   Isi kredit
                 </button>
               )}

@@ -1,11 +1,10 @@
 // Ringkasan memori: dibuat oleh model AI pilihan pengguna dari memori tersimpan + profil.
-import { streamChat, PROVIDERS } from './providers';
+import { streamChat, getProvider, providerReady } from './providers';
 import { extractMemories } from './parse';
 
 function requireKey(settings) {
-  const key = settings.keys[settings.provider];
-  if (!key) throw new Error(`Tambahkan API key ${PROVIDERS[settings.provider]?.short || ''} dulu di Pengaturan → Kunci API.`);
-  return key;
+  if (!providerReady(settings, settings.provider)) throw new Error(`Tambahkan API key ${getProvider(settings.provider)?.short || ''} dulu di Pengaturan → Kunci API.`);
+  return settings.keys[settings.provider] || '';
 }
 
 async function complete(settings, system, userText, signal) {

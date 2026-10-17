@@ -3969,3 +3969,84 @@ button.p-row:active,
 .interrupt-box .link-btn {
   min-height: 40px;
 }
+
+/* ---------- Endpoint kustom (Kunci API) ---------- */
+.custom-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  scroll-margin-top: 12px;
+}
+.custom-section .section-title {
+  padding: 0;
+  margin: 8px 0 0;
+}
+.custom-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.custom-form small {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.custom-form .segmented > button {
+  font-size: 13px;
+  padding: 0 6px;
+}
+.wrap-chips {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.self-start {
+  align-self: flex-start;
+}
+.advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  min-height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.advanced-toggle svg {
+  transition: transform 0.18s ease;
+}
+.advanced-toggle svg.rot {
+  transform: rotate(180deg);
+}
+.custom-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.custom-icon {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.custom-text {
+  flex: 1;
+  min-width: 0;
+}
+.add-endpoint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 48px;
+}
+.chip svg {
+  vertical-align: -3px;
+  margin-right: 2px;
+}

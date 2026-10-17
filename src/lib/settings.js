@@ -1,3 +1,5 @@
+import { setCustomEndpoints } from './providers';
+
 const KEY = 'aidriy.settings.v1';
 
 export const DEFAULTS = {
@@ -18,6 +20,7 @@ export const DEFAULTS = {
   imageModel: 'flux.2-klein-4b',
   translateTarget: 'en',
   modelCache: {},
+  customEndpoints: [], // [{ id, name, baseUrl, format, authStyle, connection, noKey, models: [{id,label}] }]
 };
 
 export function loadSettings() {
@@ -25,12 +28,14 @@ export function loadSettings() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredClone(DEFAULTS);
     const s = JSON.parse(raw);
+    setCustomEndpoints(s.customEndpoints);
     return {
       ...DEFAULTS,
       ...s,
       keys: { ...DEFAULTS.keys, ...(s.keys || {}) },
       voice: { ...DEFAULTS.voice, ...(s.voice || {}) },
       modelCache: s.modelCache || {},
+      customEndpoints: Array.isArray(s.customEndpoints) ? s.customEndpoints : [],
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -38,6 +43,7 @@ export function loadSettings() {
 }
 
 export function saveSettings(s) {
+  setCustomEndpoints(s.customEndpoints);
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {

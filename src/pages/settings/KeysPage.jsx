@@ -250,7 +250,10 @@ function CustomEndpointForm({ ep, onDone }) {
         <input
           className="input mono"
           value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
+          onChange={(e) => {
+            setBaseUrl(e.target.value);
+            setKeyUrl(CUSTOM_PRESETS.find((p) => p.baseUrl === normalizeBaseUrl(e.target.value))?.keyUrl || '');
+          }}
           placeholder="https://api.contoh.com/v1"
           inputMode="url"
           autoCapitalize="off"
@@ -260,15 +263,16 @@ function CustomEndpointForm({ ep, onDone }) {
         <small className="muted">Tanpa /chat/completions di akhir — aplikasi menambahkannya sendiri.</small>
       </label>
       <div className="field">
-        <span>Format API</span>
+        <span>Format API (kompatibel)</span>
         <div className="segmented">
           <button type="button" className={format === 'openai' ? 'on' : ''} onClick={() => setFormat('openai')}>
-            Kompatibel OpenAI
+            OpenAI
           </button>
           <button type="button" className={format === 'anthropic' ? 'on' : ''} onClick={() => setFormat('anthropic')}>
-            Kompatibel Anthropic
+            Anthropic
           </button>
         </div>
+        <small className="muted">Hampir semua penyedia memakai format OpenAI (/chat/completions). Pilih Anthropic hanya untuk endpoint /messages.</small>
       </div>
       <label className="field">
         <span>API key</span>
@@ -442,10 +446,15 @@ function CustomEndpoints() {
       delete next.keys[pid];
       delete next.modelCache[pid];
       if (s.provider === pid) {
-        const fallback = Object.keys(PROVIDERS).find((id) => s.keys[id]);
-        if (fallback) {
-          next.provider = fallback;
-          next.model = PROVIDERS[fallback].models[0]?.id;
+        // Pindah ke penyedia lain yang siap: bawaan yang punya key, lalu endpoint kustom lain.
+        const builtin = Object.keys(PROVIDERS).find((id) => s.keys[id]);
+        const other = next.customEndpoints.find((e) => (e.noKey || s.keys[`custom:${e.id}`]) && (e.models[0] || s.modelCache?.[`custom:${e.id}`]?.[0]));
+        if (builtin) {
+          next.provider = builtin;
+          next.model = (s.modelCache?.[builtin]?.[0] || PROVIDERS[builtin].models[0])?.id;
+        } else if (other) {
+          next.provider = `custom:${other.id}`;
+          next.model = (other.models[0] || s.modelCache[`custom:${other.id}`][0]).id;
         }
       }
       return next;

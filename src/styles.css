@@ -4020,7 +4020,9 @@ button.p-row:active,
 }
 .custom-card {
   display: flex;
+  flex-direction: row;
   align-items: center;
+  text-align: left;
   gap: 12px;
   min-width: 0;
 }

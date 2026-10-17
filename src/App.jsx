@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 import { App as CapApp } from '@capacitor/app';
 import { useApp, popCloser } from './state';
 import { isNative } from './lib/native';
+import { activeJobCount, onOpenFromNotification } from './lib/keepAlive';
 import Drawer from './components/Drawer';
 import Toast from './components/Toast';
 import { LogoMark } from './components/Logo';
@@ -37,6 +38,11 @@ function BackButton() {
         setDrawerOpen(false);
         return;
       }
+      // Jawaban/proses sedang berjalan di chat ini: kembali = sembunyikan aplikasi, proses tidak dibatalkan.
+      if (activeJobCount() > 0 && location.pathname.startsWith('/c/')) {
+        CapApp.minimizeApp().catch(() => {});
+        return;
+      }
       if (location.pathname !== '/') {
         if (window.history.length > 1) navigate(-1);
         else navigate('/', { replace: true });
@@ -48,6 +54,9 @@ function BackButton() {
       h.then((x) => x.remove());
     };
   }, [navigate, location.pathname, drawerOpen, setDrawerOpen]);
+
+  // Ketuk notifikasi "selesai" → buka percakapannya.
+  useEffect(() => onOpenFromNotification((id) => navigate(`/c/${id}`)), [navigate]);
   return null;
 }
 

@@ -26,6 +26,9 @@ import ActionMenu from '../components/ActionMenu';
 import ChatFilesSheet from '../components/ChatFilesSheet';
 import useStickToBottom from '../lib/useStickToBottom';
 import useChatSearch from '../lib/useChatSearch';
+import { beginJob, endJob, progressJob } from '../lib/keepAlive';
+import { clearInflight, readInflight, saveInflight } from '../lib/inflight';
+import { onAppBackground } from '../lib/native';
 import { generateImage, readText, translate, languageLabel, LANGUAGES, IMAGE_MODELS, NvidiaToolError } from '../lib/nvidiaTools';
 import ProjectPicker from '../components/ProjectPicker';
 import ShareChatSheet, { shareOrCopy } from '../components/ShareChatSheet';
@@ -60,6 +63,43 @@ export function computeVisible(list) {
     info.set(g[idx].id, { index: idx + 1, count: g.length, key: k });
   }
   return { list: out, info };
+}
+
+/**
+ * Bila jawaban terakhir terputus karena aplikasi dimatikan sistem, tampilkan bagian yang sudah tertulis
+ * (dari cadangan lokal) sebagai jawaban "terhenti" yang bisa dilanjutkan, disimpan, atau dibuang.
+ */
+function withRecoveredDraft(convId, msgs) {
+  const d = readInflight(convId);
+  if (!d) return msgs;
+  let parent = d.parentId;
+  if (!parent || String(parent).startsWith('u-')) {
+    const last = msgs[msgs.length - 1];
+    parent = last?.role === 'user' ? last.id : null;
+  }
+  const pIdx = parent ? msgs.findIndex((m) => m.id === parent) : -1;
+  const version = d.version || 1;
+  const done = msgs.some((m) => m.role === 'assistant' && groupKey(m) === parent && (m.version || 1) === version);
+  if (pIdx < 0 || done) {
+    clearInflight(convId);
+    return msgs;
+  }
+  let at = pIdx + 1;
+  while (at < msgs.length && msgs[at].role === 'assistant' && groupKey(msgs[at]) === parent) at++;
+  const rec = {
+    id: `rec-${d.ts}`,
+    role: 'assistant',
+    content: d.text,
+    parent_id: parent,
+    version,
+    interrupted: true,
+    _sel: true,
+    created_at: new Date(d.ts).toISOString(),
+    meta: { provider: d.provider, model: d.modelLabel },
+  };
+  const out = msgs.map((m) => (m.role === 'assistant' && groupKey(m) === parent && m._sel ? { ...m, _sel: false } : m));
+  out.splice(at, 0, rec);
+  return out;
 }
 
 function makeTitle(text, atts) {
@@ -201,7 +241,7 @@ export default function ChatPage() {
           return;
         }
         setConv(c);
-        setMessages(msgs);
+        setMessages(withRecoveredDraft(id, msgs));
         scroller.stick();
       } catch (e) {
         if (!cancelled) showToast(e.message, 'error');
@@ -417,21 +457,37 @@ export default function ChatPage() {
   };
 
   // ---------- Menjalankan AI ----------
+  // Pembungkus: proses tetap berjalan saat aplikasi ditinggal (Android), plus notifikasi saat selesai.
   const runAssistant = async (convId, historyList, beforeSave, opts = {}) => {
+    const title = convRef.current?.title || 'Chat';
+    const jobId = await beginJob(`Menulis jawaban · ${title}`, convId);
+    try {
+      const out = await runAssistantInner(convId, historyList, beforeSave, { ...opts, jobId });
+      endJob(jobId, out ? { title: 'Jawaban selesai', text: `${title}: ${plainText(out).replace(/\s+/g, ' ').slice(0, 160)}`, conversationId: convId } : null);
+      return out;
+    } catch (e) {
+      endJob(jobId, { title: 'Jawaban gagal', text: `${title}: ${e.message}`, conversationId: convId });
+      throw e;
+    }
+  };
+
+  const runAssistantInner = async (convId, historyList, beforeSave, opts = {}) => {
     const provider = settings.provider;
     const model = settings.model;
     const apiKey = settings.keys[provider];
     const tempId = `ai-${Date.now()}`;
     const parentId = opts.parentId || null;
     const version = opts.version || 1;
-    const ai = { id: tempId, role: 'assistant', content: '', thinking: '', streaming: true, status: '', meta: {}, parent_id: parentId, version, _sel: true };
+    const ai = { id: tempId, role: 'assistant', content: opts.prefix || '', thinking: '', streaming: true, status: '', meta: {}, parent_id: parentId, version, _sel: true };
     setMessages((prev) => [
-      ...prev.map((m) => (m.role === 'assistant' && parentId && groupKey(m) === parentId && m._sel ? { ...m, _sel: false } : m)),
+      ...prev
+        .filter((m) => m.id !== opts.replaceId)
+        .map((m) => (m.role === 'assistant' && parentId && groupKey(m) === parentId && m._sel ? { ...m, _sel: false } : m)),
       ai,
     ]);
     scroller.stick();
 
-    let text = '';
+    let text = opts.prefix || '';
     let thinking = '';
     let status = '';
     const sources = [];
@@ -454,6 +510,19 @@ export default function ChatPage() {
     const schedule = () => {
       if (!raf && !finished) raf = requestAnimationFrame(flush);
     };
+
+    // Cadangan berkala: bila aplikasi dimatikan sistem, bagian yang sudah tertulis bisa dilanjutkan.
+    const keepDraft = !incognito && !!convId;
+    let draftParent = parentId;
+    if (keepDraft) Promise.resolve(beforeSave).then((r) => { if (r) draftParent = r; }, () => {});
+    let savedLen = -1;
+    const saveDraft = () => {
+      if (!keepDraft || finished || text.length === savedLen || !text.trim()) return;
+      savedLen = text.length;
+      saveInflight(convId, { parentId: draftParent, version, text, provider, modelLabel: shortModelName(provider, model, settings.modelCache) });
+    };
+    const draftTimer = keepDraft ? setInterval(saveDraft, 1500) : null;
+    const offBackground = keepDraft ? onAppBackground(saveDraft) : () => {};
 
     // Pencarian gambar nyata lewat backend; hasil (atau error) disimpan apa adanya.
     const startImageSearch = (query, auto = false) => {
@@ -515,7 +584,13 @@ export default function ChatPage() {
           model,
           apiKey,
           system,
-          history: toProviderHistory(historyList),
+          history: opts.prefix
+            ? [
+                ...toProviderHistory(historyList),
+                { role: 'assistant', text: opts.prefix },
+                { role: 'user', text: 'Lanjutkan jawabanmu tepat dari kata terakhir di atas. Jangan mengulang bagian yang sudah ditulis dan jangan menambahkan kalimat pengantar.' },
+              ]
+            : toProviderHistory(historyList),
           effort,
           webSearch,
           signal: controller.signal,
@@ -524,6 +599,7 @@ export default function ChatPage() {
           onText: (t) => {
             text += t;
             status = '';
+            if (opts.jobId) progressJob(opts.jobId, `Menulis jawaban… ${text.length.toLocaleString('id-ID')} karakter`);
             if (imagesOn && t.includes('>')) imageQueries(text).forEach((q) => startImageSearch(q));
             schedule();
           },
@@ -568,6 +644,8 @@ export default function ChatPage() {
     }
 
     finished = true;
+    if (draftTimer) clearInterval(draftTimer);
+    offBackground();
     if (raf) cancelAnimationFrame(raf);
     text = applySnippetCitations(text, snippetCites);
     const { clean, memories: newMems } = extractMemories(text);
@@ -585,6 +663,7 @@ export default function ChatPage() {
         prev.filter((m) => m.id !== tempId).map((m) => (opts.prevSelId && m.id === opts.prevSelId ? { ...m, _sel: true } : m))
       );
       if (error) showToast(`Gagal membuat ulang: ${error}`, 'error');
+      if (keepDraft) clearInflight(convId);
       return '';
     }
 
@@ -622,6 +701,7 @@ export default function ChatPage() {
         const row = { conversation_id: convId, role: 'assistant', content: clean, meta, version };
         if (realParent && !String(realParent).startsWith('u-')) row.parent_id = realParent;
         const saved = await db.insertMessage(row);
+        clearInflight(convId);
         setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: saved.id, parent_id: saved.parent_id || m.parent_id, created_at: saved.created_at } : m)));
         const infos = await processCanvases(clean, convId, saved.id, canvases, false);
         if (infos.length) {
@@ -640,14 +720,28 @@ export default function ChatPage() {
       } catch (e) {
         showToast(`Gagal menyimpan: ${e.message}`, 'error');
       }
-    }
+    } else if (keepDraft) clearInflight(convId);
     if (error) throw Object.assign(new Error(error), { shown: true });
     return clean;
   };
 
   // ---------- Alat NVIDIA (gambar, OCR, terjemahan) ----------
   const TOOL_STATUS = { image: 'Membuat gambar dengan NVIDIA FLUX…', ocr: 'Membaca teks dengan NVIDIA OCR…', translate: 'Menerjemahkan dengan NVIDIA Riva…' };
+  const TOOL_JOB = { image: ['Membuat gambar…', 'Gambar selesai dibuat'], ocr: ['Membaca teks dokumen…', 'Teks dokumen selesai dibaca'], translate: ['Menerjemahkan…', 'Terjemahan selesai'] };
   const runTool = async (convId, toolSpec, userMsg, fullAtts, beforeSave, opts = {}) => {
+    const title = convRef.current?.title || 'Chat';
+    const [doing, done] = TOOL_JOB[toolSpec.type] || ['Memproses…', 'Selesai'];
+    const jobId = await beginJob(`${doing} · ${title}`, convId);
+    let out = '';
+    try {
+      out = await runToolInner(convId, toolSpec, userMsg, fullAtts, beforeSave, opts);
+      return out;
+    } finally {
+      endJob(jobId, out ? { title: done, text: `${title}: ${plainText(out).replace(/\s+/g, ' ').slice(0, 160)}`, conversationId: convId } : { title: 'Proses tidak selesai', text: `${title}: buka chat untuk melihat detailnya.`, conversationId: convId });
+    }
+  };
+
+  const runToolInner = async (convId, toolSpec, userMsg, fullAtts, beforeSave, opts = {}) => {
     const key = settings.keys.nvidia;
     const tempId = `ai-${Date.now()}`;
     const parentId = opts.parentId || null;
@@ -888,6 +982,55 @@ export default function ChatPage() {
       } else {
         await runAssistant(convRef.current?.id, history, Promise.resolve(null), ropts);
       }
+    } catch {
+      /* sudah ditampilkan */
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  // Jawaban yang terhenti (aplikasi dimatikan sistem): lanjutkan, simpan apa adanya, atau buang.
+  const handleInterrupted = async (msg, action) => {
+    const convId = convRef.current?.id;
+    if (!convId || busyRef.current) return;
+    tap();
+    if (action === 'discard') {
+      clearInflight(convId);
+      setMessages((prev) => {
+        const rest = prev.filter((m) => m.id !== msg.id);
+        const g = rest.filter((m) => m.role === 'assistant' && groupKey(m) === msg.parent_id);
+        const keep = g[g.length - 1]?.id;
+        return keep ? rest.map((m) => (m.id === keep ? { ...m, _sel: true } : m)) : rest;
+      });
+      return;
+    }
+    if (action === 'keep') {
+      try {
+        const saved = await db.insertMessage({ conversation_id: convId, role: 'assistant', content: msg.content, meta: msg.meta || {}, version: msg.version || 1, parent_id: msg.parent_id });
+        clearInflight(convId);
+        setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, id: saved.id, interrupted: false, created_at: saved.created_at } : m)));
+        refreshConversations();
+      } catch (e) {
+        showToast(`Gagal menyimpan: ${e.message}`, 'error');
+      }
+      return;
+    }
+    // Lanjutkan dari bagian terakhir
+    const provider = settings.provider;
+    if (!settings.keys[provider]) {
+      showToast(`Tambahkan API key ${PROVIDERS[provider].short} dulu`, 'error');
+      navigate('/settings/keys');
+      return;
+    }
+    const vis = computeVisible(messagesRef.current.filter((m) => m.id !== msg.id)).list;
+    const pIdx = vis.findIndex((m) => m.id === msg.parent_id);
+    if (pIdx < 0) return;
+    const history = vis.slice(0, pIdx + 1);
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      await runAssistant(convId, history, Promise.resolve(null), { parentId: msg.parent_id, version: msg.version || 1, prefix: msg.content, replaceId: msg.id });
     } catch {
       /* sudah ditampilkan */
     } finally {
@@ -1237,6 +1380,7 @@ export default function ChatPage() {
                   onFeedback={m.role === 'assistant' ? setFeedback : undefined}
                   onShare={m.role === 'assistant' ? shareMessage : undefined}
                   onPickModel={openModelPicker}
+                  onInterrupted={m.interrupted ? handleInterrupted : undefined}
                   canvasRows={rowsForRender}
                   latestCanvas={latestCanvas}
                   voice={settings}

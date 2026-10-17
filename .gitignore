@@ -1,5 +1,5 @@
 node_modules
 dist
-android
+/android
 .DS_Store
 *.log

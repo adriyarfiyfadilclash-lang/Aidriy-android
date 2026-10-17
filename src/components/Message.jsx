@@ -10,6 +10,7 @@ import {
   FileText,
   Globe,
   ImageIcon,
+  PauseCircle,
   RotateCcw,
   Share2,
   Square,
@@ -72,6 +73,7 @@ function Message({
   onFeedback,
   onShare,
   onPickModel,
+  onInterrupted,
   canvasRows,
   latestCanvas,
   voice,
@@ -205,9 +207,32 @@ function Message({
         </div>
       )}
 
+      {msg.interrupted && !streaming && (
+        <div className="interrupt-box" role="status">
+          <PauseCircle size={18} />
+          <div className="error-body">
+            <div className="error-title">Jawaban terhenti</div>
+            <div>Aplikasi sempat ditutup oleh sistem sebelum jawaban ini selesai. Bagian yang sudah tertulis masih aman.</div>
+            {onInterrupted && (
+              <div className="error-actions">
+                <button type="button" className="btn btn-dark small-btn" disabled={busy} onClick={() => onInterrupted(msg, 'continue')}>
+                  Lanjutkan
+                </button>
+                <button type="button" className="btn btn-ghost small-btn" disabled={busy} onClick={() => onInterrupted(msg, 'keep')}>
+                  Simpan apa adanya
+                </button>
+                <button type="button" className="link-btn" disabled={busy} onClick={() => onInterrupted(msg, 'discard')}>
+                  Buang
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {sources.length > 0 && !streaming && <Sources sources={sources} />}
 
-      {!streaming && (msg.content || msg.meta?.genImage) && (
+      {!streaming && !msg.interrupted && (msg.content || msg.meta?.genImage) && (
         <div className="msg-actions" role="toolbar" aria-label="Aksi pesan">
           {versions && versions.count > 1 && (
             <span className="ver-nav" aria-label={`Versi ${versions.index} dari ${versions.count}`}>

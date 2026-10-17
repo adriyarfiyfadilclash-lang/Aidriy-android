@@ -3945,3 +3945,27 @@ button.p-row:active,
   color: var(--muted);
   flex-shrink: 0;
 }
+
+/* Jawaban yang terhenti karena aplikasi dimatikan sistem */
+.interrupt-box {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-top: 6px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface, transparent));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text);
+  font-size: 15px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.interrupt-box > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.interrupt-box .btn,
+.interrupt-box .link-btn {
+  min-height: 40px;
+}

@@ -218,11 +218,20 @@ export default function VoiceMode({ open, onClose, onUtterance, onAbort }) {
     if (!open) return undefined;
     return onAppBackground(() => {
       if (!activeRef.current) return;
-      haltAll();
+      // Mikrofon & suara dihentikan; jawaban AI yang sedang ditulis TIDAK dibatalkan.
+      const wasProcessing = stateRef.current === 'processing';
+      turnRef.current += 1;
+      stopListening();
+      stopSpeaking();
       setState('idle');
-      setHint('Dijeda karena aplikasi ditinggalkan. Ketuk mikrofon untuk lanjut.');
+      setHint(
+        wasProcessing
+          ? 'Mikrofon dijeda. Jawaban tetap ditulis dan tersimpan di chat.'
+          : 'Dijeda karena aplikasi ditinggalkan. Ketuk mikrofon untuk lanjut.'
+      );
     });
-  }, [open, haltAll]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!open) return null;
 
